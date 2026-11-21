@@ -18,6 +18,15 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: No AI attribution in PR commits or body
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git log --format=%B "$BASE..$HEAD" | sh scripts/check-attribution.sh
+          printf '%s\n' "$BODY" | sh scripts/check-attribution.sh
       - run: npm ci
       - run: npm run typecheck
       - run: npm test

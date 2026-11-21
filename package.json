@@ -7,15 +7,30 @@
     "node": ">=24"
   },
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
     "dev": "npm run build:client && node --env-file-if-exists=.env --watch src/server/main.ts",
     "build:client": "esbuild src/client/main.ts --bundle --format=esm --outdir=dist/client",
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check:lockfile": "node scripts/check-lockfile.ts"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.2.0",
     "@types/node": "^24.19.2",
     "esbuild": "^0.28.2",
+    "markdown-it-anchor": "^10.1.0",
     "typescript": "^7.0.2",
     "vitest": "^5.1.1"
+  },
+  "dependencies": {
+    "markdown-it": "^15.0.3",
+    "prosemirror-commands": "^1.7.2",
+    "prosemirror-history": "^1.5.2",
+    "prosemirror-keymap": "^1.2.3",
+    "prosemirror-markdown": "^1.14.0",
+    "prosemirror-model": "^1.25.13",
+    "prosemirror-schema-list": "^1.6.1",
+    "prosemirror-state": "^1.4.4",
+    "prosemirror-view": "^1.43.0"
   }
 }

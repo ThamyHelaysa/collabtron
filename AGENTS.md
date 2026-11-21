@@ -6,6 +6,12 @@
   no `Co-Authored-By` trailers, no "Generated with Claude Code" footers,
   no session links — commits, PR bodies, issue bodies, comments included.
 
+- **Fix tool bugs at the source**: change the tool, its version or its config
+  (see `docs/adr/`). Code written to work around a tool's bug is forbidden.
+
+- **Work is done when CI is green**: after a push, run `gh pr checks <n> --watch`
+  and fix what fails before reporting.
+
 ## Agent skills
 
 ### Issue tracker
@@ -18,4 +24,4 @@ Default canonical labels: `needs-triage`, `needs-info`, `ready-for-agent`, `read
 
 ### Domain docs
 
-Single-context: one `GLOSSARY.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`.
+Single-context: one `GLOSSARY.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`, also for where the target site's Markdown config and Posts live.
