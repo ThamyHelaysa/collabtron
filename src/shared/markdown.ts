@@ -175,6 +175,8 @@ function shortcodeBlock(state: StateCore, block: Token): Token[] {
   // Saved as "\n  caption\n": the site sees the same HTML only if the caption had whitespace around it and no blank line.
   const body = tag![3];
   if (!/^\s/.test(body) || !/\s$/.test(body) || /\n[ \t]*\n/.test(body.trim())) return [block];
+  // The lazy body can run past its own end tag into a following container.
+  if (new RegExp(`\\{%-?\\s*(?:end)?${tag![1]}\\b`).test(body)) return [block];
   return [
     Object.assign(new state.Token(`${known.node}_open`, "", 1), { meta: attrs }),
     htmlInline(state, body.trim()),

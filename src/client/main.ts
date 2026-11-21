@@ -5,7 +5,7 @@ import { wrapInList } from "prosemirror-schema-list";
 import { EditorState, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { parse, schema, serialize } from "../shared/markdown.ts";
-import { insertImageContainer, insertVideoContainer, shortcodeViews } from "./shortcode-blocks.ts";
+import { exitCaption, insertImageContainer, insertVideoContainer, shortcodeViews } from "./shortcode-blocks.ts";
 
 const postId = decodeURIComponent(location.pathname.split("/")[2]);
 const api = `/api/posts/${encodeURIComponent(postId)}`;
@@ -66,7 +66,7 @@ const view = new EditorView(document.querySelector("#editor"), {
     doc,
     plugins: [
       history(),
-      keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": save }),
+      keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": save, Enter: exitCaption }),
       keymap(baseKeymap),
     ],
   }),

@@ -1,9 +1,9 @@
 import type { Node } from "prosemirror-model";
-import type { Command } from "prosemirror-state";
+import { TextSelection, type Command } from "prosemirror-state";
 import type { EditorView, NodeView, NodeViewConstructor, ViewMutationRecord } from "prosemirror-view";
 import { schema } from "../shared/markdown.ts";
 
-// Optional arguments save as null when emptied; the site treats null and "" alike for these.
+// Optional arguments save as null when emptied, the site treats null and "" alike for them; others save as "".
 type Field = { label: string; optional?: true };
 const fields: Record<string, Record<string, Field>> = {
   image_container: {
@@ -65,8 +65,20 @@ class ShortcodeView implements NodeView {
   }
 }
 
-const view: NodeViewConstructor = (node, editor, getPos) => new ShortcodeView(node, editor, getPos);
-export const shortcodeViews = { image_container: view, video_container: view };
+const shortcodeView: NodeViewConstructor = (node, view, getPos) => new ShortcodeView(node, view, getPos);
+export const shortcodeViews = { image_container: shortcodeView, video_container: shortcodeView };
+
+// A caption is one block: Enter would split it into two copies of the video, so continue in a paragraph after the card.
+export const exitCaption: Command = (state, dispatch) => {
+  const { $head } = state.selection;
+  if ($head.parent.type !== schema.nodes.video_container) return false;
+  if (dispatch) {
+    const pos = $head.after();
+    const tr = state.tr.insert(pos, schema.nodes.paragraph.create());
+    dispatch(tr.setSelection(TextSelection.create(tr.doc, pos + 1)).scrollIntoView());
+  }
+  return true;
+};
 
 function insertAfterBlock(node: Node): Command {
   return (state, dispatch) => {

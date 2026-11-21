@@ -335,3 +335,10 @@ test.each([
 ])("keeps trailing spaces in HTML as text, not a break: %j", (markdown) => {
   expect(serialize(parse(markdown))).toBe(markdown);
 });
+
+test("keeps two video containers with no blank line between them apart", () => {
+  const markdown = '{% videoContainer "a.mp4", null, null %}\n  A\n{% endvideoContainer %}\n{% videoContainer "b.mp4", null, null %}\n  B\n{% endvideoContainer %}\n';
+  const doc = parse(markdown);
+  expect(doc.firstChild!.type.name).toBe("raw_block");
+  expect(serialize(doc)).toBe(markdown);
+});

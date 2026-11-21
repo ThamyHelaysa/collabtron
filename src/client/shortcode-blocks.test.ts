@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, expect, test } from "vitest";
-import { EditorState } from "prosemirror-state";
+import { EditorState, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { parse, serialize } from "../shared/markdown.ts";
-import { insertImageContainer, insertVideoContainer, shortcodeViews } from "./shortcode-blocks.ts";
+import { exitCaption, insertImageContainer, insertVideoContainer, shortcodeViews } from "./shortcode-blocks.ts";
 
 let view: EditorView;
 afterEach(() => view.destroy());
@@ -64,4 +64,12 @@ test.each([
   open("Lorem\n");
   expect(insert(view.state, view.dispatch)).toBe(true);
   expect(serialize(view.state.doc)).toBe(`Lorem\n\n${shortcode}\n`);
+});
+
+test("Enter in a video caption leaves the card instead of splitting the video", () => {
+  open('{% videoContainer "lorem.mp4", null, null %}\n  Ipsum dolor\n{% endvideoContainer %}\n');
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1 + "Ipsum".length)));
+  expect(exitCaption(view.state, view.dispatch)).toBe(true);
+  view.dispatch(view.state.tr.insertText("Sit"));
+  expect(serialize(view.state.doc)).toBe('{% videoContainer "lorem.mp4", null, null %}\n  Ipsum dolor\n{% endvideoContainer %}\n\nSit\n');
 });
