@@ -294,3 +294,51 @@ test.each([[" "], [""]])("keeps an HTML block after editing collapses the newlin
     [br, ...(after ? [schema.text(after)] : []), ...rest])]);
   expect(serialize(edited)).toBe('</br>\n<strong class="lorem">ipsum</strong> <code class="sit">a*b*</code>\n');
 });
+
+test("parses an image container, single- or multi-line, into a Shortcode Block with its arguments as attributes", () => {
+  const markdown = '{% imageContainer \n   "Lorem \\"ipsum\\"", \n   \'dolor.jpg\', \n   null, \n   "Sit" \n%}\n';
+  const doc = parse(markdown);
+  expect(doc.firstChild!.type.name).toBe("image_container");
+  expect(doc.firstChild!.attrs).toEqual({ caption: 'Lorem "ipsum"', src: "dolor.jpg", mobileSrc: null, alt: "Sit" });
+  expect(serialize(doc)).toBe('{% imageContainer "Lorem \\"ipsum\\"", "dolor.jpg", null, "Sit" %}\n');
+});
+
+test.each([
+  '{% imageContainer "Lorem", "ipsum.jpg", null %}',
+  '{% imageContainer "Lorem", "ipsum.jpg", null, "Dolor",%}',
+  '{% imageContainer "Lorem", src, null, "Dolor" %}',
+  '{%- imageContainer "Lorem", "ipsum.jpg", null, "Dolor" %}',
+  '{% imageContainer "Lorem", "ipsum.jpg", null, "Dolor" %}\nsit',
+])("keeps a shortcode it cannot edit as a Raw Block: %j", (markdown) => {
+  const doc = parse(markdown);
+  expect(doc.firstChild!.type.name).toBe("raw_block");
+  expect(serialize(doc)).toBe(`${markdown}\n`);
+});
+
+test("parses a video container into a Shortcode Block whose caption is editable inline content", () => {
+  const markdown = '{% videoContainer "lorem.mp4", \'ipsum.mp4\', "loop" %}\n  Dolor <strong>sit</strong> **amet** {{ x }}\n{% endvideoContainer %}\n';
+  const doc = parse(markdown);
+  const video = doc.firstChild!;
+  expect(video.type.name).toBe("video_container");
+  expect(video.attrs).toEqual({ src: "lorem.mp4", mobileSrc: "ipsum.mp4", props: "loop" });
+  expect(video.textContent).toBe("Dolor sit **amet** ");
+  expect(video.child(1).marks.map((mark) => mark.type.name)).toEqual(["strong"]);
+  expect(video.lastChild!.type.name).toBe("raw_inline");
+  expect(serialize(doc)).toBe('{% videoContainer "lorem.mp4", "ipsum.mp4", "loop" %}\n  Dolor <strong>sit</strong> **amet** {{ x }}\n{% endvideoContainer %}\n');
+  expect(serialize(parse('{% videoContainer "lorem.mp4" %}\nDolor\n{% endvideoContainer %}')))
+    .toBe('{% videoContainer "lorem.mp4", null, null %}\n  Dolor\n{% endvideoContainer %}\n');
+});
+
+test.each([
+  '{% videoContainer "lorem.mp4", null, null %}\n  Ipsum  \n  dolor\n{% endvideoContainer %}\n',
+  "</br>\nIpsum  \ndolor\n",
+])("keeps trailing spaces in HTML as text, not a break: %j", (markdown) => {
+  expect(serialize(parse(markdown))).toBe(markdown);
+});
+
+test("keeps two video containers with no blank line between them apart", () => {
+  const markdown = '{% videoContainer "a.mp4", null, null %}\n  A\n{% endvideoContainer %}\n{% videoContainer "b.mp4", null, null %}\n  B\n{% endvideoContainer %}\n';
+  const doc = parse(markdown);
+  expect(doc.firstChild!.type.name).toBe("raw_block");
+  expect(serialize(doc)).toBe(markdown);
+});

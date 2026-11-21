@@ -19,6 +19,7 @@
     "@types/markdown-it": "^14.2.0",
     "@types/node": "^24.19.2",
     "esbuild": "^0.28.2",
+    "jsdom": "^31.0.1",
     "markdown-it-anchor": "^10.1.0",
     "typescript": "^7.0.2",
     "vitest": "^5.1.1"
