@@ -27,16 +27,20 @@ export const schema = new Schema({
   marks: baseSchema.spec.marks.remove("link").addToStart("link", {
     ...baseSchema.spec.marks.get("link")!,
     // wrapped: marks covering exactly this link were written outside it.
-    attrs: { ...baseSchema.spec.marks.get("link")!.attrs, wrapped: { default: false } },
-    toDOM: ({ attrs: { wrapped, ...attrs } }) => ["a", {
-      ...attrs,
-      ...(isExternal(attrs.href) ? { rel: "noreferrer", target: "_blank" } : {}),
-    }, 0],
+    // html: saved as HTML (true) or Markdown (false); null, for new links, follows house style.
+    // extra: attributes Collaborators cannot edit, kept and saved back but never rendered in the editor.
+    attrs: { ...baseSchema.spec.marks.get("link")!.attrs, wrapped: { default: false }, html: { default: null }, extra: { default: {} } },
+    toDOM: ({ attrs }) => ["a", linkAttributes({ ...attrs, extra: {} }), 0],
   }).addBefore("em", "strikethrough", {
+    attrs: { extra: { default: {} } },
     parseDOM: [{ tag: "s" }],
     toDOM: () => ["s", 0],
-  }),
+  }).update("em", withExtra("em")).update("strong", withExtra("strong")).update("code", withExtra("code")),
 });
+
+function withExtra(name: string) {
+  return { ...baseSchema.spec.marks.get(name)!, attrs: { extra: { default: {} } } };
+}
 
 const tokenizer = MarkdownIt({ html: true });
 tokenizer.block.ruler.before("fence", "nunjucks_block", (state, startLine, endLine, silent) => {
@@ -83,11 +87,12 @@ tokenizer.core.ruler.after("inline", "house_style", (state) => {
     return [new state.Token("html_paragraph_open", "p", 1), inline, new state.Token("html_paragraph_close", "p", -1)];
   });
   for (const block of state.tokens) {
-    const stack: string[] = [];
+    const stack: { type: string; index: number }[] = [];
     // A Markdown break ends its line: keep that newline so the site still renders <br> plus whitespace.
+    // Empty text renders nothing; dropping it lets a mark see its neighbours.
     block.children &&= block.children.flatMap((token) =>
-      token.type === "hardbreak" ? [token, new state.Token("softbreak", "br", 0)] : [token]);
-    let previous = "";
+      token.type === "hardbreak" ? [token, new state.Token("softbreak", "br", 0)] :
+      token.type === "text" && !token.content ? [] : [token]);
     for (const token of block.children ?? []) {
       // Alt text is plain text, so a raw piece in it would be dropped.
       if (token.children?.some(({ type }) => type === "raw_inline" || type === "html_inline"))
@@ -103,46 +108,66 @@ tokenizer.core.ruler.after("inline", "house_style", (state) => {
       if (opening) {
         const element = parseFragment(token.content).childNodes[0];
         if (!element || !("tagName" in element)) throw new Error("Invalid house-style tag");
-        if (tag !== "a" && element.attrs.length) throw new Error("Unsupported mark attributes");
+        const attrs = Object.fromEntries(element.attrs.map(({ name, value }) => [name, value]));
         if (tag === "a") {
-          if (element.attrs.some(({ name }) => !["href", "title", "rel", "target"].includes(name)))
-            throw new Error("Unsupported link attributes");
-          const attrs = Object.fromEntries(element.attrs.map(({ name, value }) => [name, value]));
-          if (attrs.href == null || !state.md.validateLink(attrs.href) ||
-              (!isExternal(attrs.href) && (attrs.rel != null || attrs.target != null)) ||
-              (attrs.rel != null && attrs.rel !== "noreferrer") ||
-              (attrs.target != null && attrs.target !== "_blank")) throw new Error("Unsupported link");
-          token.attrs = [["href", attrs.href]];
-          if (attrs.title != null) token.attrs.push(["title", attrs.title]);
-        }
+          const { href, title, ...extra } = attrs;
+          if (href == null || !state.md.validateLink(href)) throw new Error("Unsupported link");
+          // House style owns rel and target on external links; drop them so they do not stay if the href turns internal.
+          if (isExternal(href)) {
+            delete extra.rel;
+            delete extra.target;
+          }
+          token.attrs = [["href", href]];
+          if (title != null) token.attrs.push(["title", title]);
+          token.meta = { html: true, extra };
+        } else token.meta = { extra: attrs };
         token.type = `${tag === "a" ? "link" : tag === "code" ? "html_code" : tag}_open`;
       } else if (closing) {
         token.type = `${tag === "a" ? "link" : tag === "code" ? "html_code" : tag}_close`;
       }
-      if (token.type === "link_open" && /^(s|strong|em)_open$/.test(previous)) token.meta = { wrapped: true };
-      previous = token.type;
+    }
+    const children = block.children ?? [];
+    children.forEach((token, i) => {
       const mark = /^(s|link|strong|em|html_code)_(open|close)$/.exec(token.type);
       if (mark?.[2] === "open") {
-        if (stack.includes(mark[1])) throw new Error("Nested house-style mark is not supported");
-        stack.push(mark[1]);
-      } else if (mark && stack.pop() !== mark[1]) throw new Error("Unmatched house-style tag");
-    }
+        if (stack.some(({ type }) => type === mark[1])) throw new Error("Nested house-style mark is not supported");
+        stack.push({ type: mark[1], index: i });
+      } else if (mark) {
+        const open = stack.pop();
+        if (open?.type !== mark[1]) throw new Error("Unmatched house-style tag");
+        if (mark[1] === "link") {
+          const outer = /^(s|strong|em)_open$/.exec(children[open.index - 1]?.type ?? "");
+          const inner = /^(s|strong|em)_open$/.exec(children[open.index + 1]?.type ?? "");
+          const wrapped = !!outer && children[i + 1]?.type === `${outer[1]}_close`;
+          // ProseMirror keeps no mark order, so such a link would not save back as written.
+          if (wrapped && inner && children.findIndex((t, j) => j > open.index && t.type === `${inner[1]}_close`) === i - 1)
+            throw new Error("Link wrapped by one mark outside and another inside is not supported");
+          children[open.index].meta = { ...children[open.index].meta, wrapped };
+        }
+      }
+    });
     if (stack.length) throw new Error("Unclosed house-style tag");
   }
 });
 
+const extraAttrs = (tok: Token) => ({ extra: tok.meta?.extra ?? {} });
 const rawInline = { node: "raw_inline", getAttrs: (tok: Token) => ({ content: tok.content }) };
 const rawBlock = { node: "raw_block", getAttrs: (tok: Token) => ({ content: tok.content.replace(/\n$/, "") }) };
 // Unmapped tokens still throw, so a Post is refused rather than silently stripped.
 const parser = new MarkdownParser(schema, tokenizer, {
   ...defaultMarkdownParser.tokens,
-  s: { mark: "strikethrough" },
+  s: { mark: "strikethrough", getAttrs: extraAttrs },
+  em: { mark: "em", getAttrs: extraAttrs },
+  strong: { mark: "strong", getAttrs: extraAttrs },
   link: {
     mark: "link",
-    getAttrs: (tok) => ({ href: tok.attrGet("href"), title: tok.attrGet("title") || null, wrapped: !!tok.meta?.wrapped }),
+    getAttrs: (tok) => ({
+      href: tok.attrGet("href"), title: tok.attrGet("title") ?? null,
+      wrapped: !!tok.meta?.wrapped, html: !!tok.meta?.html, extra: tok.meta?.extra ?? {},
+    }),
   },
   html_paragraph: { block: "paragraph", attrs: { htmlBlock: true } },
-  html_code: { mark: "code" },
+  html_code: { mark: "code", getAttrs: extraAttrs },
   raw_inline: rawInline,
   html_inline: rawInline,
   raw_block: rawBlock,
@@ -183,20 +208,19 @@ const serializer = new MarkdownSerializer(
   },
   {
     ...defaultMarkdownSerializer.marks,
-    strikethrough: { open: "<s>", close: "</s>", mixable: true },
+    strikethrough: { open: (_state, mark) => `<s${htmlAttributes(mark.attrs.extra)}>`, close: "</s>", mixable: true },
+    em: htmlWhenExtra("em"),
+    strong: htmlWhenExtra("strong"),
+    code: htmlWhenExtra("code"),
     link: {
       ...defaultMarkdownSerializer.marks.link,
       open(state, mark, parent, index) {
-        if (isExternal(mark.attrs.href)) {
-          const escape = tokenizer.utils.escapeHtml;
-          const title = mark.attrs.title == null ? "" : ` title="${escape(mark.attrs.title)}"`;
-          return `<a href="${escape(mark.attrs.href)}" rel="noreferrer" target="_blank"${title}>`;
-        }
+        if (isHtmlLink(mark)) return `<a${htmlAttributes(linkAttributes(mark.attrs))}>`;
         const { open } = defaultMarkdownSerializer.marks.link;
         return typeof open === "string" ? open : open(state, mark, parent, index);
       },
       close(state, mark, parent, index) {
-        if (isExternal(mark.attrs.href)) return "</a>";
+        if (isHtmlLink(mark)) return "</a>";
         const { close } = defaultMarkdownSerializer.marks.link;
         return typeof close === "string" ? close : close(state, mark, parent, index);
       },
@@ -225,6 +249,39 @@ function isExternal(href: string): boolean {
   return /^(?:https?:)?\/\//i.test(href);
 }
 
+function linkAttributes({ href, title, extra }: Attrs): Attrs {
+  if (!isExternal(href)) return { href, title, ...extra };
+  // House style owns rel and target on external links.
+  const { rel, target, ...kept } = extra;
+  return { href, title, ...kept, rel: "noreferrer", target: "_blank" };
+}
+
+function hasExtra(mark: Mark): boolean {
+  return Object.keys(mark.attrs.extra).length > 0;
+}
+
+function isHtmlLink(mark: Mark): boolean {
+  return (mark.attrs.html ?? isExternal(mark.attrs.href)) || hasExtra(mark);
+}
+
+// Kept attributes on these marks only come from an HTML block; once it loses its leading break they need HTML.
+type MarkSerializerSpec = MarkdownSerializer["marks"][string];
+function htmlWhenExtra(name: "em" | "strong" | "code"): MarkSerializerSpec {
+  const spec = defaultMarkdownSerializer.marks[name];
+  const call = (part: MarkSerializerSpec["open"], ...args: Parameters<Exclude<MarkSerializerSpec["open"], string>>) =>
+    typeof part === "string" ? part : part(...args);
+  return {
+    ...spec,
+    open(state, mark, parent, index) {
+      if (!hasExtra(mark)) return call(spec.open, state, mark, parent, index);
+      // shortcut: code text is written unescaped, so it would read as Markdown inside HTML; upgrade if a Post needs it.
+      if (name === "code") throw new Error("Unsupported code attributes outside an HTML block");
+      return `<${name}${htmlAttributes(mark.attrs.extra)}>`;
+    },
+    close: (state, mark, parent, index) => hasExtra(mark) ? `</${name}>` : call(spec.close, state, mark, parent, index),
+  };
+}
+
 function htmlAttributes(attrs: Attrs): string {
   return Object.entries(attrs).filter(([, value]) => value != null)
     .map(([name, value]) => ` ${name}="${tokenizer.utils.escapeHtml(String(value))}"`).join("");
@@ -241,8 +298,7 @@ function serializeHtmlInline(paragraph: Node): string {
       if (mark.type.name === "link" && !tokenizer.validateLink(mark.attrs.href)) throw new Error("Unsupported link");
       const spec = mark.type.spec.toDOM!(mark, true);
       if (!Array.isArray(spec) || typeof spec[0] !== "string") throw new Error("Unsupported HTML mark");
-      const attrs = typeof spec[1] === "object" ? htmlAttributes(spec[1]) : "";
-      html += `<${spec[0]}${attrs}>`;
+      html += `<${spec[0]}${htmlAttributes(mark.type.name === "link" ? linkAttributes(mark.attrs) : mark.attrs.extra)}>`;
       active.push({ mark, close: `</${spec[0]}>` });
     }
     if (node.isText) html += tokenizer.utils.escapeHtml(node.text!);

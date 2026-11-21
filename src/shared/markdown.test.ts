@@ -58,14 +58,52 @@ test("parses HTML strikethrough as an editable mark and saves it as <s>", () => 
   expect(serialize(marked)).toBe("<s>ipsum</s>\n");
 });
 
-test("saves external links in house style, preserving escaped attributes", () => {
-  const doc = parse('[Lorem](https://example.com/?a=1&b=2 "A & B")');
-  expect(serialize(doc)).toBe('<a href="https://example.com/?a=1&amp;b=2" rel="noreferrer" target="_blank" title="A &amp; B">Lorem</a>\n');
-  expect(parse(serialize(doc)).eq(doc)).toBe(true);
+const linked = (text: string, attrs: object) => schema.node("doc", null, [schema.node("paragraph", null, [
+  schema.text(text, [schema.marks.link.create(attrs)]),
+])]);
+const linkOf = (doc: ReturnType<typeof parse>) => doc.firstChild!.firstChild!.marks.find((mark) => mark.type.name === "link")!;
+
+test("saves new external links in house style HTML, preserving escaped attributes", () => {
+  const doc = linked("Lorem", { href: "https://example.com/?a=1&b=2", title: "A & B" });
+  expect(serialize(doc)).toBe('<a href="https://example.com/?a=1&amp;b=2" title="A &amp; B" rel="noreferrer" target="_blank">Lorem</a>\n');
+  expect(serialize(linked("Lorem", { href: "/posts/lorem" }))).toBe("[Lorem](/posts/lorem)\n");
   const html = '<a target="_blank" title="A &quot;quote&quot;" rel="noreferrer" href="https://example.com/">**Lorem**</a>';
-  const link = parse(html).firstChild!.firstChild!.marks.find((mark) => mark.type.name === "link")!;
-  expect(link.attrs).toEqual({ href: "https://example.com/", title: 'A "quote"', wrapped: false });
-  expect(render(serialize(parse(html)))).toBe(render(html));
+  expect(linkOf(parse(html)).attrs).toEqual({ href: "https://example.com/", title: 'A "quote"', wrapped: false, html: true, extra: {} });
+  expect(serialize(parse(html))).toBe('<a href="https://example.com/" title="A &quot;quote&quot;" rel="noreferrer" target="_blank">**Lorem**</a>\n');
+});
+
+test("saves a link in the form it was parsed", () => {
+  expect(serialize(parse('[Lorem](https://example.com/ "Ipsum")'))).toBe('[Lorem](https://example.com/ "Ipsum")\n');
+  expect(serialize(parse('<a href="/posts/lorem">Ipsum</a>'))).toBe('<a href="/posts/lorem">Ipsum</a>\n');
+});
+
+test("keeps unknown attributes hidden from Collaborators and saves them after href and title", () => {
+  const doc = parse('<a data-x="1" href="/posts/lorem" rel="internal" title="Ipsum">dolor</a>');
+  expect(linkOf(doc).attrs).toMatchObject({ href: "/posts/lorem", title: "Ipsum", extra: { "data-x": "1", rel: "internal" } });
+  expect(serialize(doc)).toBe('<a href="/posts/lorem" title="Ipsum" data-x="1" rel="internal">dolor</a>\n');
+  expect(serialize(parse('<s class="lorem" id="ipsum">dolor</s>'))).toBe('<s class="lorem" id="ipsum">dolor</s>\n');
+});
+
+test("never renders kept attributes in the editor", () => {
+  const doc = parse('<a href="/posts/lorem" onclick="alert(1)">ipsum</a> <s style="color:red">dolor</s>\n\n</br>\n<em onmouseover="alert(1)">sit</em>');
+  const rendered: unknown[] = [];
+  doc.descendants((node) => { for (const mark of node.marks) rendered.push(mark.type.spec.toDOM!(mark, true)); });
+  expect(JSON.stringify(rendered)).not.toMatch(/onclick|style|onmouseover/);
+  expect(serialize(doc)).toContain('<a href="/posts/lorem" onclick="alert(1)">');
+  expect(serialize(doc)).toContain('<em onmouseover="alert(1)">');
+  expect(serialize(parse('<a href="/posts/lorem" title="">ipsum</a>'))).toBe('<a href="/posts/lorem" title="">ipsum</a>\n');
+});
+
+test("gives a link house-style rel and target once its href becomes external", () => {
+  const doc = parse('<a href="/posts/lorem" rel="internal" data-x="1">ipsum</a>');
+  const link = linkOf(doc);
+  const state = EditorState.create({ doc });
+  const end = doc.content.size - 1;
+  const edited = state.apply(state.tr.removeMark(1, end, link)
+    .addMark(1, end, schema.marks.link.create({ ...link.attrs, href: "https://example.com/" }))).doc;
+  expect(serialize(edited)).toBe('<a href="https://example.com/" data-x="1" rel="noreferrer" target="_blank">ipsum</a>\n');
+  expect(serialize(parse('<a href="https://example.com/" rel="nofollow" target="frame">ipsum</a>')))
+    .toBe('<a href="https://example.com/" rel="noreferrer" target="_blank">ipsum</a>\n');
 });
 
 test("keeps relative links in Markdown", () => {
@@ -99,18 +137,16 @@ test.each(["<br/>", "</br>"])("recognizes a hard break on its own line: %s", (ma
 
 test.each([
   'Lorem <a href="javascript:alert(1)">ipsum</a>',
-  'Lorem <a href="https://example.com" data-extra="keep">ipsum</a>',
-  'Lorem <a href="https://example.com" rel="nofollow">ipsum</a>',
-  'Lorem <a href="https://example.com" target="frame">ipsum</a>',
-  'Lorem <a href="/posts/lorem" rel="noreferrer" target="_blank">ipsum</a>',
   "Lorem <a>ipsum</a>",
-  'Lorem <s class="keep">ipsum</s>',
   "Lorem <s>ipsum",
   "Lorem ipsum</s>",
   "Lorem <s><s>ipsum</s></s>",
   "<s>one ~~two~~ three</s>",
   '<a href="https://example.com" rel="noreferrer" target="_blank">one [two](/posts/lorem) three</a>',
   'Lorem <s><a href="https://example.com">ipsum</s></a>',
+  "*[**Lorem**](/ipsum)*",
+  "~~[*Lorem*](/ipsum)~~",
+  '</br>\n<em class="x"><a href="/ipsum"><strong>Lorem</strong></a></em>',
 ])("refuses unsupported or unbalanced HTML instead of losing it: %s", (markdown) => {
   expect(() => parse(markdown)).toThrow();
 });
@@ -235,6 +271,17 @@ test.each([
   `${external}**Lorem**</a>`,
   `</br>\n<strong>${external}Lorem</a></strong>`,
   `</br>\n${external}<strong>Lorem</strong></a>`,
+  "*[**Lorem** ipsum](/dolor) sit*",
+  "*[Lorem](/ipsum) **dolor***",
+  "[*Lorem*](/ipsum) *dolor*",
 ])("keeps marks inside or outside a link as written: %j", (markdown) => {
   expect(serialize(parse(markdown))).toBe(`${markdown}\n`);
+});
+
+test("keeps mark attributes as HTML after deleting an HTML block's leading break", () => {
+  const doc = parse('<br/>\n<strong class="lorem">ipsum</strong> <em id="dolor">sit</em> <code class="amet">x</code>\n');
+  const strip = (keep: (name: string) => boolean) => schema.node("doc", null, [schema.node("paragraph", null,
+    doc.firstChild!.content.content.slice(2).filter((node) => node.marks.every((mark) => keep(mark.type.name))))]);
+  expect(serialize(strip((name) => name !== "code"))).toBe('<strong class="lorem">ipsum</strong> <em id="dolor">sit</em> \n');
+  expect(() => serialize(strip(() => true))).toThrow();
 });
