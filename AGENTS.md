@@ -6,6 +6,9 @@
   no `Co-Authored-By` trailers, no "Generated with Claude Code" footers,
   no session links — commits, PR bodies, issue bodies, comments included.
 
+- **Fix tool bugs at the source**: change the tool, its version or its config
+  (see `docs/adr/`). Code written to work around a tool's bug is forbidden.
+
 - **Work is done when CI is green**: after a push, run `gh pr checks <n> --watch`
   and fix what fails before reporting.
 
