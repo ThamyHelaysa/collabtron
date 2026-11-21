@@ -178,11 +178,11 @@ const serializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
     paragraph(state, node, parent, index) {
-      const startsWithBreakLine = node.firstChild?.type.name === "hard_break" &&
-        (node.childCount === 1 || node.child(1).text?.startsWith("\n"));
-      if (!node.attrs.htmlBlock || !startsWithBreakLine)
+      if (!node.attrs.htmlBlock || node.firstChild?.type.name !== "hard_break")
         return defaultMarkdownSerializer.nodes.paragraph(state, node, parent, index);
-      state.write(serializeHtmlInline(node));
+      const html = serializeHtmlInline(node);
+      // Editing collapses the newline after the break to a space or nothing; the block needs it to stay HTML.
+      state.write(node.childCount > 1 ? html.replace(/^<\/br>[ \t]*\n?/, "</br>\n") : html);
       state.closeBlock(node);
     },
     raw_block(state, node) {

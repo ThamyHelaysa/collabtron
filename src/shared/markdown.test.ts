@@ -285,3 +285,12 @@ test("keeps mark attributes as HTML after deleting an HTML block's leading break
   expect(serialize(strip((name) => name !== "code"))).toBe('<strong class="lorem">ipsum</strong> <em id="dolor">sit</em> \n');
   expect(() => serialize(strip(() => true))).toThrow();
 });
+
+test.each([[" "], [""]])("keeps an HTML block after editing collapses the newline after its break: %j", (after) => {
+  const markdown = '<br/>\n<strong class="lorem">ipsum</strong> <code class="sit">a*b*</code>\n';
+  const doc = parse(markdown);
+  const [br, , ...rest] = doc.firstChild!.content.content;
+  const edited = schema.node("doc", null, [schema.node("paragraph", doc.firstChild!.attrs,
+    [br, ...(after ? [schema.text(after)] : []), ...rest])]);
+  expect(serialize(edited)).toBe('</br>\n<strong class="lorem">ipsum</strong> <code class="sit">a*b*</code>\n');
+});
