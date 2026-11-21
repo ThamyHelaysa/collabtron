@@ -1,12 +1,18 @@
 import MarkdownIt, { type StateCore, type Token } from "markdown-it";
 import { parseFragment } from "parse5";
 import { Fragment, Schema, type Attrs, type Mark, type Node } from "prosemirror-model";
-import { MarkdownParser, MarkdownSerializer, defaultMarkdownParser, defaultMarkdownSerializer, schema as baseSchema } from "prosemirror-markdown";
+import { MarkdownParser, MarkdownSerializer, type MarkdownSerializerState, defaultMarkdownParser, defaultMarkdownSerializer, schema as baseSchema } from "prosemirror-markdown";
 
 export const schema = new Schema({
   nodes: baseSchema.spec.nodes.update("paragraph", {
     ...baseSchema.spec.nodes.get("paragraph")!,
     attrs: { htmlBlock: { default: false } },
+  }).update("blockquote", {
+    ...baseSchema.spec.nodes.get("blockquote")!,
+    // A site callout: "error" or "warning", saved as HTML. null is a Markdown blockquote.
+    attrs: { variant: { default: null } },
+    toDOM: (node) => ["blockquote", node.attrs.variant ? { class: `${node.attrs.variant}-block block` } : {}, 0],
+    parseDOM: [{ tag: "blockquote", getAttrs: (dom) => ({ variant: /\b(error|warning)-block\b/.exec(dom.className)?.[1] ?? null }) }],
   }).update("heading", {
     ...baseSchema.spec.nodes.get("heading")!,
     content: "(text | image | raw_inline)*",
@@ -31,6 +37,19 @@ export const schema = new Schema({
     attrs: { src: { default: "" }, mobileSrc: { default: null }, props: { default: null } },
     toDOM: (node) => ["figure", { class: "video-container", "data-attrs": JSON.stringify(node.attrs) }, ["figcaption", 0]],
     parseDOM: [{ tag: "figure.video-container", contentElement: "figcaption", getAttrs: (dom) => JSON.parse(dom.dataset.attrs ?? "{}") }],
+  }).addToEnd("details", {
+    group: "block",
+    content: "details_summary block+",
+    defining: true,
+    // Always open: a native <details> would fold away while being edited.
+    toDOM: () => ["div", { class: "details" }, 0],
+    parseDOM: [{ tag: "div.details" }, { tag: "details" }],
+  }).addToEnd("details_summary", {
+    // The site writes the summary into HTML, so only what HTML can say: no Markdown images.
+    content: "(text | raw_inline | hard_break)*",
+    defining: true,
+    toDOM: () => ["div", { class: "details-summary" }, 0],
+    parseDOM: [{ tag: "div.details-summary" }, { tag: "summary" }],
   }).addBefore("hard_break", "raw_inline", {
     inline: true,
     group: "inline",
@@ -88,8 +107,12 @@ for (const md of [tokenizer, htmlTokenizer]) md.inline.ruler.before("text", "nun
 htmlTokenizer.inline.ruler.enableOnly(["nunjucks_inline", "text", "html_inline", "entity"]);
 tokenizer.core.ruler.after("inline", "house_style", (state) => {
   // HTML blocks treat Markdown syntax literally, including after a leading break.
-  state.tokens = state.tokens.flatMap((block) => {
+  const closes = new Map<number, string>();
+  state.tokens = state.tokens.flatMap((block, i) => {
+    if (closes.has(i)) return [new state.Token(`${closes.get(i)}_close`, "", -1)];
     if (block.type === "raw_block") return shortcodeBlock(state, block);
+    const container = block.type === "html_block" ? htmlContainer(state, i, closes) : null;
+    if (container) return container;
     if (block.type !== "html_block" || !breakTag.test(block.content.split("\n", 1)[0].trim())) return [block];
     return [new state.Token("html_paragraph_open", "p", 1), htmlInline(state, block.content.trimEnd()), new state.Token("html_paragraph_close", "p", -1)];
   });
@@ -184,6 +207,49 @@ function shortcodeBlock(state: StateCore, block: Token): Token[] {
   ];
 }
 
+// Site HTML blocks with editable insides. The opening tag's HTML block holds the first lines, read as HTML,
+// and may end with the end tag; otherwise Markdown blocks follow until the end tag alone in its HTML block.
+const containers = [
+  { name: "blockquote", open: /^<blockquote class="(error|warning)-block block">[ \t]*\n/, end: "</blockquote>", attrs: (m: RegExpExecArray) => ({ variant: m[1] }) },
+  { name: "details", open: /^<details>[ \t]*\n[ \t]*<summary>((?:(?!<\/summary>).)*)<\/summary>[ \t]*\n/, end: "</details>", summary: (m: RegExpExecArray) => m[1] },
+] as { name: string; open: RegExp; end: string; attrs?: (m: RegExpExecArray) => Attrs; summary?: (m: RegExpExecArray) => string }[];
+
+function htmlContainer(state: StateCore, start: number, closes: Map<number, string>): Token[] | null {
+  const block = state.tokens[start];
+  const container = containers.find(({ open }) => open.test(block.content));
+  if (!container) return null;
+  const { name, open, end, attrs, summary } = container;
+  const tag = new RegExp(`</?${name}\\b`, "i");
+  const inside = (content: string) => {
+    const match = open.exec(content)!;
+    const rest = content.slice(match[0].length).trimEnd();
+    const closed = rest.endsWith(end);
+    const lines = closed ? rest.slice(0, -end.length) : rest;
+    // The site sees whitespace before the end tag; saving puts a newline there, so it must already be one.
+    if (tag.test(lines) || (closed && !/\n[ \t]*$/.test(lines))) return null;
+    return { match, closed, lines: lines.trim() };
+  };
+  const first = inside(block.content);
+  if (!first) return null;
+  if (!first.closed) {
+    let depth = 1, i = start;
+    while (depth && ++i < state.tokens.length) {
+      const { type, level, content } = state.tokens[i];
+      if (type !== "html_block" || level !== block.level || !tag.test(content)) continue;
+      if (content.trim() === end) depth--;
+      else if (open.test(content) && inside(content)) depth += inside(content)!.closed ? 0 : 1;
+      else return null;
+    }
+    if (depth) return null;
+    closes.set(i, name);
+  }
+  const tokens: Token[] = [Object.assign(new state.Token(`${name}_open`, "", 1), { meta: attrs?.(first.match) })];
+  if (summary) tokens.push(new state.Token("details_summary_open", "", 1), htmlInline(state, summary(first.match)), new state.Token("details_summary_close", "", -1));
+  if (first.lines) tokens.push(new state.Token("html_paragraph_open", "p", 1), htmlInline(state, first.lines), new state.Token("html_paragraph_close", "p", -1));
+  if (first.closed) tokens.push(new state.Token(`${name}_close`, "", -1));
+  return tokens;
+}
+
 // Inline content the site sees inside HTML, where Markdown syntax is literal.
 function htmlInline(state: StateCore, content: string): Token {
   const inline = new state.Token("inline", "", 0);
@@ -231,6 +297,9 @@ const parser = new MarkdownParser(schema, tokenizer, {
       wrapped: !!tok.meta?.wrapped, html: !!tok.meta?.html, extra: tok.meta?.extra ?? {},
     }),
   },
+  blockquote: { block: "blockquote", getAttrs: (tok: Token) => ({ variant: tok.meta?.variant ?? null }) },
+  details: { block: "details" },
+  details_summary: { block: "details_summary" },
   html_paragraph: { block: "paragraph", attrs: { htmlBlock: true } },
   html_code: { mark: "code", getAttrs: extraAttrs },
   raw_inline: rawInline,
@@ -251,6 +320,13 @@ const serializer = new MarkdownSerializer(
       // Editing collapses the newline after the break to a space or nothing; the block needs it to stay HTML.
       state.write(node.childCount > 1 ? html.replace(/^<\/br>[ \t]*\n?/, "</br>\n") : html);
       state.closeBlock(node);
+    },
+    blockquote(state, node, parent, index) {
+      if (!node.attrs.variant) return defaultMarkdownSerializer.nodes.blockquote(state, node, parent, index);
+      serializeHtmlContainer(state, node, `<blockquote class="${node.attrs.variant}-block block">`, "</blockquote>", 0);
+    },
+    details(state, node) {
+      serializeHtmlContainer(state, node, `<details>\n  <summary>${serializeHtmlInline(node.firstChild!)}</summary>`, "</details>", 1);
     },
     raw_block(state, node) {
       state.text(node.attrs.content, false);
@@ -302,6 +378,23 @@ const serializer = new MarkdownSerializer(
     },
   },
 );
+
+// Children from `from` on; a first HTML paragraph goes in the opening tag's HTML block, the rest as Markdown after a blank line.
+function serializeHtmlContainer(state: MarkdownSerializerState, node: Node, open: string, end: string, from: number) {
+  const first = node.maybeChild(from);
+  const html = first?.type === schema.nodes.paragraph && first.attrs.htmlBlock;
+  state.text(html ? `${open}\n${serializeHtmlInline(first)}` : open, false);
+  for (let i = from + (html ? 1 : 0); i < node.childCount; i++) {
+    state.closeBlock(node);
+    state.render(node.child(i), node, i);
+  }
+  if (html && node.childCount === from + 1) state.text(`\n${end}`, false);
+  else {
+    state.closeBlock(node);
+    state.text(end, false);
+  }
+  state.closeBlock(node);
+}
 
 // End of the tag at start, or of its {% end<name> %} when one follows.
 // shortcut: counts only same-name tags, so a lone `{% set x = 1 %}` before an `{% endset %}` misnests; upgrade if Posts use set blocks.

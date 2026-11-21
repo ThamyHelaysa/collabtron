@@ -1,3 +1,4 @@
+import { wrapIn } from "prosemirror-commands";
 import type { Node } from "prosemirror-model";
 import { TextSelection, type Command } from "prosemirror-state";
 import type { EditorView, NodeView, NodeViewConstructor, ViewMutationRecord } from "prosemirror-view";
@@ -90,3 +91,17 @@ function insertAfterBlock(node: Node): Command {
 
 export const insertImageContainer = insertAfterBlock(schema.nodes.image_container.create());
 export const insertVideoContainer = insertAfterBlock(schema.nodes.video_container.create());
+export const insertDetails = insertAfterBlock(schema.nodes.details.create(null, [schema.nodes.details_summary.create(), schema.nodes.paragraph.create()]));
+
+// null is a Markdown quote, else a site callout ("error", "warning"). Outside a blockquote, wraps the selection in one.
+export function setQuoteVariant(variant: string | null): Command {
+  return (state, dispatch) => {
+    const { $from } = state.selection;
+    for (let depth = $from.depth; depth > 0; depth--) {
+      if ($from.node(depth).type !== schema.nodes.blockquote) continue;
+      dispatch?.(state.tr.setNodeAttribute($from.before(depth), "variant", variant));
+      return true;
+    }
+    return wrapIn(schema.nodes.blockquote, { variant })(state, dispatch);
+  };
+}

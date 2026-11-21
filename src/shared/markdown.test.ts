@@ -342,3 +342,51 @@ test("keeps two video containers with no blank line between them apart", () => {
   expect(doc.firstChild!.type.name).toBe("raw_block");
   expect(serialize(doc)).toBe(markdown);
 });
+
+test("parses a callout blockquote into a blockquote with a variant, its first HTML lines editable", () => {
+  const markdown = '<blockquote class="warning-block block">\nLorem <strong>ipsum</strong> **dolor**\n\nSit *amet*\n</blockquote>\n';
+  const doc = parse(markdown);
+  const quote = doc.firstChild!;
+  expect(quote.type.name).toBe("blockquote");
+  expect(quote.attrs.variant).toBe("warning");
+  expect(quote.child(0).attrs.htmlBlock).toBe(true);
+  expect(quote.child(0).textContent).toBe("Lorem ipsum **dolor**");
+  expect(quote.child(1).child(1).marks.map((mark) => mark.type.name)).toEqual(["em"]);
+  expect(serialize(doc)).toBe('<blockquote class="warning-block block">\nLorem <strong>ipsum</strong> **dolor**\n\nSit *amet*\n\n</blockquote>\n');
+  expect(serialize(parse('<blockquote class="error-block block">\n  Lorem\n</blockquote>'))).toBe('<blockquote class="error-block block">\nLorem\n</blockquote>\n');
+  expect(parse("> Lorem\n").firstChild!.attrs.variant).toBe(null);
+});
+
+test.each([
+  '<blockquote class="error-block block">Lorem\n</blockquote>',
+  '<blockquote class="info-block block">\nLorem\n</blockquote>',
+  '<blockquote class="error-block block">\nLorem\n</blockquote>\n<p>ipsum</p>',
+  '<blockquote class="error-block block">\nLorem\n\nipsum',
+])("keeps a callout it cannot edit as Raw Blocks: %j", (markdown) => {
+  const doc = parse(markdown);
+  expect(doc.firstChild!.type.name).toBe("raw_block");
+  expect(serialize(doc)).toBe(`${markdown}\n`);
+});
+
+test("parses details into an editable summary and body", () => {
+  const markdown = "<details>\n  <summary>Lorem <strong>ipsum</strong></summary>\n  Dolor **sit**\n</details>\n\n<details>\n  <summary>Amet</summary>\n\n  - Consectetur\n\n</details>\n";
+  const doc = parse(markdown);
+  const [html, markdownBody] = [doc.child(0), doc.child(1)];
+  expect(html.type.name).toBe("details");
+  expect(html.child(0).type.name).toBe("details_summary");
+  expect(html.child(0).child(1).marks.map((mark) => mark.type.name)).toEqual(["strong"]);
+  expect(html.child(1).attrs.htmlBlock).toBe(true);
+  expect(html.child(1).textContent).toBe("Dolor **sit**");
+  expect(markdownBody.child(1).type.name).toBe("bullet_list");
+  expect(serialize(doc)).toBe("<details>\n  <summary>Lorem <strong>ipsum</strong></summary>\nDolor **sit**\n</details>\n\n<details>\n  <summary>Amet</summary>\n\n- Consectetur\n\n</details>\n");
+});
+
+test.each([
+  "<details>\nLorem\n</details>",
+  "<details><summary>Lorem</summary>\nipsum\n</details>",
+  "<details>\n  <summary>Lorem</summary>ipsum\n</details>",
+])("keeps details it cannot edit as Raw Blocks: %j", (markdown) => {
+  const doc = parse(markdown);
+  expect(doc.firstChild!.type.name).toBe("raw_block");
+  expect(serialize(doc)).toBe(`${markdown}\n`);
+});

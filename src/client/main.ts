@@ -5,7 +5,7 @@ import { wrapInList } from "prosemirror-schema-list";
 import { EditorState, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { parse, schema, serialize } from "../shared/markdown.ts";
-import { exitCaption, insertImageContainer, insertVideoContainer, shortcodeViews } from "./shortcode-blocks.ts";
+import { exitCaption, insertDetails, insertImageContainer, insertVideoContainer, setQuoteVariant, shortcodeViews } from "./shortcode-blocks.ts";
 
 const postId = decodeURIComponent(location.pathname.split("/")[2]);
 const api = `/api/posts/${encodeURIComponent(postId)}`;
@@ -42,6 +42,10 @@ const tools: [string, Command][] = [
   ["H3", setBlockType(heading, { level: 3 })],
   ["Bullet list", wrapInList(bullet_list)],
   ["Ordered list", wrapInList(ordered_list)],
+  ["Quote", setQuoteVariant(null)],
+  ["Error block", setQuoteVariant("error")],
+  ["Warning block", setQuoteVariant("warning")],
+  ["Details", insertDetails],
   ["Image", insertImageContainer],
   ["Video", insertVideoContainer],
   ["Save", save],
