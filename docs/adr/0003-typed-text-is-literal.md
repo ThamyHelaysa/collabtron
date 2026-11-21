@@ -6,7 +6,7 @@ To keep it literal, the serializer swaps in an HTML entity only where the text w
 
 - `&` before an entity-like `name;` becomes `&amp;`
 - `<` before a letter, `/`, `!` or `?` becomes `&lt;`
-- each `{` before `{`, `%` or `#` becomes `&#123;`
+- each `{` before `{`, `%` or `#`, or at the end of a text node, becomes `&#123;`. The next node may be a Raw Inline that starts with `{`.
 
 markdown-it decodes these entities, so the site shows the original characters. Nunjucks runs first and never decodes them, so it never sees a tag. The code is `literalText` in `src/shared/markdown.ts`. Text inside HTML content (captions, summaries, a callout's first lines) is HTML-escaped as before, and `{` gets the same entity.
 
@@ -18,6 +18,6 @@ markdown-it decodes these entities, so the site shows the original characters. N
 
 ## Consequences
 
-- Existing Posts render the same. Raw Blocks, Raw Inlines and Shortcode Block fields read from a Post are never escaped, only text nodes. A text node can only hold one of these characters if the Post already escaped it, so escaping it again gives the same render.
-- **Not covered:** inline code and code blocks are written raw, because entities would show up literally in code. Nunjucks still runs there, so Posts protect code with `{% raw %}` themselves. Also not covered: text equal to its link's href (it may save as an autolink, where entities stay literal), image alt text, and Shortcode Block fields.
+- Existing Posts render the same. Only text nodes are escaped. Raw Blocks, Raw Inlines and Shortcode Block fields are left as read. An entity renders as the character it replaces. A Post's own HTML and Nunjucks already parse into Raw Blocks and Raw Inlines, so no tag of the Post is ever escaped. The full Round-trip checks this.
+- **Not covered:** inline code and code blocks are written raw, because entities would show up literally in code. Nunjucks still runs there, so Posts protect code with `{% raw %}` themselves. Also not covered: autolink text (`<mailto:…>`, where entities stay literal; HTML links are escaped), image alt text, and Shortcode Block fields.
 - Do not "simplify" the escapes back to plain characters. The round-trip tests in `src/shared/markdown.test.ts` ("typed text in a … saves as literal text") will fail if you do.

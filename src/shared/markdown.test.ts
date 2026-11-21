@@ -414,3 +414,20 @@ describe.each(Object.entries(contexts))("typed text in a %s saves as literal tex
     expect(saved.replace(/^\{% (end)?videoContainer.*$/gm, "")).not.toMatch(/\{[{%#]/);
   });
 });
+
+test.each([
+  ["Lorem {{ v }}\n", "Lorem &#123;{{ v }}\n"],
+  ['{% videoContainer "a.mp4", null, null %}\n  Lorem {{ v }}\n{% endvideoContainer %}\n', '{% videoContainer "a.mp4", null, null %}\n  Lorem &#123;{{ v }}\n{% endvideoContainer %}\n'],
+])("a { typed right before a Raw Inline does not join its tag: %j", (markdown, saved) => {
+  const doc = parse(markdown);
+  let at = -1;
+  doc.descendants((node, pos) => { if (node.type.name === "raw_inline") at = pos; });
+  const edited = EditorState.create({ doc }).tr.insertText("{", at).doc;
+  expect(serialize(edited)).toBe(saved);
+  expect(parse(saved).toJSON()).toEqual(edited.toJSON());
+});
+
+test("escapes typed text of a link equal to its href unless it saves as an autolink", () => {
+  expect(serialize(linked("/{% x %}", { href: "/{% x %}" }))).toBe("[/&#123;% x %}](/{% x %})\n");
+  expect(serialize(linked("mailto:a@b.co", { href: "mailto:a@b.co" }))).toBe("<mailto:a@b.co>\n");
+});
