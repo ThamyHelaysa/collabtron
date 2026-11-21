@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, expect, test } from "vitest";
+import { baseKeymap } from "prosemirror-commands";
 import { EditorState, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { parse, serialize } from "../shared/markdown.ts";
-import { exitCaption, insertImageContainer, insertVideoContainer, shortcodeViews } from "./shortcode-blocks.ts";
+import { exitCaption, insertDetails, insertImageContainer, insertVideoContainer, setQuoteVariant, shortcodeViews } from "./shortcode-blocks.ts";
 
 let view: EditorView;
 afterEach(() => view.destroy());
@@ -72,4 +73,29 @@ test("Enter in a video caption leaves the card instead of splitting the video", 
   expect(exitCaption(view.state, view.dispatch)).toBe(true);
   view.dispatch(view.state.tr.insertText("Sit"));
   expect(serialize(view.state.doc)).toBe('{% videoContainer "lorem.mp4", null, null %}\n  Ipsum dolor\n{% endvideoContainer %}\n\nSit\n');
+});
+
+test("toolbar switches a blockquote between Markdown quote and callout variants", () => {
+  open("Lorem\n");
+  expect(setQuoteVariant("warning")(view.state, view.dispatch)).toBe(true);
+  expect(serialize(view.state.doc)).toBe('<blockquote class="warning-block block">\n\nLorem\n\n</blockquote>\n');
+  setQuoteVariant(null)(view.state, view.dispatch);
+  expect(serialize(view.state.doc)).toBe("> Lorem\n");
+});
+
+test("switching a callout's variant keeps its HTML lines", () => {
+  open('<blockquote class="error-block block">\nLorem <strong>ipsum</strong>\n</blockquote>\n');
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 3)));
+  setQuoteVariant("warning")(view.state, view.dispatch);
+  expect(serialize(view.state.doc)).toBe('<blockquote class="warning-block block">\nLorem <strong>ipsum</strong>\n</blockquote>\n');
+});
+
+test("toolbar inserts details after the current block, Enter in its summary continues in the body", () => {
+  open("Lorem\n");
+  expect(insertDetails(view.state, view.dispatch)).toBe(true);
+  const summary = view.state.doc.child(0).nodeSize + 2;
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, summary)).insertText("Ipsum"));
+  baseKeymap.Enter(view.state, view.dispatch);
+  view.dispatch(view.state.tr.insertText("Dolor"));
+  expect(serialize(view.state.doc)).toBe("Lorem\n\n<details>\n  <summary>Ipsum</summary>\n\nDolor\n\n</details>\n");
 });

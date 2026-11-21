@@ -21,6 +21,12 @@ const page = `<!doctype html>
     .shortcode-block fieldset { display: grid; gap: .25em; border: 0; padding: 0; margin: 0; }
     .shortcode-block label { display: grid; font-size: .85em; color: #555; }
     .shortcode-block figcaption { margin-top: .5em; }
+    blockquote { border-left: 4px solid #ccc; margin-left: 0; padding-left: 1em; }
+    .error-block { border-color: #d33; background: #fdeeee; }
+    .warning-block { border-color: #e90; background: #fff6e5; }
+    .details { border: 1px solid #ccc; border-radius: 4px; padding: .5em; }
+    .details-summary { font-weight: bold; }
+    .details-summary::before { content: "▸ "; }
   </style>
 </head>
 <body>
