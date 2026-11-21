@@ -200,3 +200,13 @@ test("requires the site's location from the env file", async () => {
   expect(result.status).toBe(1);
   expect(result.output).toContain("Set SITE_DIR and POSTS_DIR in .env");
 });
+
+test("uses the editor's Post Catalog validation", async () => {
+  await post("invalid Post ID", "Lorem\n");
+  await commitPosts();
+
+  const result = run();
+
+  expect(result.status).toBe(1);
+  expect(result.output).toContain('Post ID "invalid Post ID" is not a folder name');
+});

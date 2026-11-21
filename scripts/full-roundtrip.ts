@@ -8,6 +8,7 @@ import matter from "@11ty/gray-matter";
 import { parse, serialize } from "../src/shared/markdown.ts";
 import { normalizeHtml } from "../test/normalize-html.ts";
 import { readPostBody, writePostBody } from "../src/server/post-file.ts";
+import { createPostCatalog } from "../src/server/post-catalog.ts";
 
 type Page = { inputPath: string; outputPath: string; content: string };
 
@@ -59,6 +60,8 @@ async function check() {
       });
       if (text !== undefined && matter(text).data.draft !== true) published.add(file);
     }
+    const ids = [...published].map(file => relative(workPosts, dirname(file)));
+    const catalog = await createPostCatalog(workPosts, ids);
 
     // The site's build owns URLs and layouts; collect its result manifest through Eleventy's public hook.
     const config = join(temp, "eleventy.config.mjs");
@@ -94,8 +97,8 @@ async function check() {
     console.log("Build A");
     const before = await build();
     let failures = 0;
-    for (const file of published) {
-      const post = { id: relative(workPosts, dirname(file)), file };
+    for (const id of ids) {
+      const post = catalog.get(id)!;
       try {
         await writePostBody(post, serialize(parse(await readPostBody(post))));
       } catch {
