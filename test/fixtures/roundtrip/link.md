@@ -1,5 +1,5 @@
-Lorem [ipsum](https://example.com) dolor [sit](https://example.com/a "Amet") amet.
+Lorem [ipsum](/posts/lorem/) dolor [sit](/posts/ipsum/ "Amet") amet.
 
 [ref link][r]
 
-[r]: https://example.com/r
+[r]: /posts/dolor/

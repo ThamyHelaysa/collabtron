@@ -56,7 +56,7 @@ beforeEach(async () => {
       const fs = require("node:fs/promises");
       const path = require("node:path");
       const { pathToFileURL } = require("node:url");
-      const markdown = require(${JSON.stringify(require.resolve("markdown-it"))})();
+      const markdown = require(${JSON.stringify(require.resolve("markdown-it"))})({ html: true });
       const matter = require(${JSON.stringify(require.resolve("@11ty/gray-matter"))});
       const handlers = new Map();
       const config = await import(pathToFileURL(process.argv.find(a => a.startsWith("--config=")).slice(9)));
@@ -100,7 +100,7 @@ test("compares published Posts and synthetic fixtures at HEAD without changing t
   const result = run();
 
   expect(result.status, result.output).toBe(0);
-  expect(result.output).toContain("8 Post pages match");
+  expect(result.output).toContain("13 Post pages match");
   expect(await readFile(join(site, "src/posts/lorem/index.md"), "utf8")).toBe("Local uncommitted text\n");
   expect(git("status", "--short")).toBe(" M site/src/posts/lorem/index.md\n");
 });

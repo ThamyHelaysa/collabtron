@@ -33,7 +33,9 @@ const { heading, paragraph, bullet_list, ordered_list } = schema.nodes;
 const tools: [string, Command][] = [
   ["Bold", bold],
   ["Italic", italic],
+  ["Strikethrough", toggleMark(schema.marks.strikethrough)],
   ["Link", toggleLink],
+  ["Inline code", toggleMark(schema.marks.code)],
   ["Paragraph", setBlockType(paragraph)],
   ["H2", setBlockType(heading, { level: 2 })],
   ["H3", setBlockType(heading, { level: 3 })],
@@ -51,7 +53,7 @@ let doc;
 try {
   doc = parse(await res.text());
 } catch (err) {
-  status.textContent = "This Post has Markdown the editor cannot keep yet (raw HTML, tables, ~~); not opened.";
+  status.textContent = "This Post has Markdown the editor cannot keep yet (unsupported HTML or tables); not opened.";
   throw err;
 }
 
