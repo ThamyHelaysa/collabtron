@@ -1,4 +1,4 @@
-import MarkdownIt from "markdown-it";
+import MarkdownIt, { type Token } from "markdown-it";
 import { parseFragment } from "parse5";
 import { Schema, type Attrs, type Mark, type Node } from "prosemirror-model";
 import { MarkdownParser, MarkdownSerializer, defaultMarkdownParser, defaultMarkdownSerializer, schema as baseSchema } from "prosemirror-markdown";
@@ -7,6 +7,22 @@ export const schema = new Schema({
   nodes: baseSchema.spec.nodes.update("paragraph", {
     ...baseSchema.spec.nodes.get("paragraph")!,
     attrs: { htmlBlock: { default: false } },
+  }).update("heading", {
+    ...baseSchema.spec.nodes.get("heading")!,
+    content: "(text | image | raw_inline)*",
+  }).addToEnd("raw_block", {
+    group: "block",
+    attrs: { content: {} },
+    draggable: true,
+    toDOM: (node) => ["pre", { class: "raw-block" }, node.attrs.content],
+    parseDOM: [{ tag: "pre.raw-block", priority: 60, getAttrs: (dom) => ({ content: dom.textContent }) }],
+  }).addBefore("hard_break", "raw_inline", {
+    inline: true,
+    group: "inline",
+    attrs: { content: {} },
+    draggable: true,
+    toDOM: (node) => ["span", { class: "raw-inline" }, node.attrs.content],
+    parseDOM: [{ tag: "span.raw-inline", getAttrs: (dom) => ({ content: dom.textContent }) }],
   }),
   marks: baseSchema.spec.marks.remove("link").addToStart("link", {
     ...baseSchema.spec.marks.get("link")!,
@@ -21,9 +37,33 @@ export const schema = new Schema({
 });
 
 const tokenizer = MarkdownIt({ html: true });
+tokenizer.block.ruler.before("fence", "nunjucks_block", (state, startLine, endLine, silent) => {
+  const start = state.bMarks[startLine] + state.tShift[startLine];
+  if (state.sCount[startLine] - state.blkIndent >= 4 || !state.src.startsWith("{%", start)) return false;
+  const end = nunjucksBlockEnd(state.src, start);
+  let line = startLine;
+  while (line < endLine && state.eMarks[line] < end) line++;
+  if (end < 0 || line === endLine) return false;
+  if (silent) return true;
+  // Like an HTML block, run on until a blank line so separating it never changes how the site renders.
+  do line++; while (line < endLine && !state.isEmpty(line));
+  const token = state.push("raw_block", "", 0);
+  token.content = state.getLines(startLine, line, state.blkIndent, true);
+  token.map = [startLine, line];
+  state.line = line;
+  return true;
+});
 const breakTag = /^<(?:br\s*\/?|\/br\s*)>$/i;
 const htmlTokenizer = MarkdownIt({ html: true });
-htmlTokenizer.inline.ruler.enableOnly(["text", "html_inline", "newline", "entity"]);
+for (const md of [tokenizer, htmlTokenizer]) md.inline.ruler.before("text", "nunjucks_inline", (state, silent) => {
+  const tag = /\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}|\{#[\s\S]*?#\}/y;
+  tag.lastIndex = state.pos;
+  if (!tag.exec(state.src) || tag.lastIndex > state.posMax) return false;
+  if (!silent) state.push("raw_inline", "", 0).content = state.src.slice(state.pos, tag.lastIndex);
+  state.pos = tag.lastIndex;
+  return true;
+});
+htmlTokenizer.inline.ruler.enableOnly(["nunjucks_inline", "text", "html_inline", "newline", "entity"]);
 tokenizer.core.ruler.after("inline", "house_style", (state) => {
   // HTML blocks treat Markdown syntax literally, including after a leading break.
   state.tokens = state.tokens.flatMap((block) => {
@@ -43,6 +83,9 @@ tokenizer.core.ruler.after("inline", "house_style", (state) => {
   for (const block of state.tokens) {
     const stack: string[] = [];
     for (const token of block.children ?? []) {
+      // Alt text is plain text, so a raw piece in it would be dropped.
+      if (token.children?.some(({ type }) => type === "raw_inline" || type === "html_inline"))
+        throw new Error("Unsupported Nunjucks or HTML in image alt text");
       if (token.type === "html_inline" && breakTag.test(token.content)) {
         token.type = "hardbreak";
         continue;
@@ -80,12 +123,18 @@ tokenizer.core.ruler.after("inline", "house_style", (state) => {
   }
 });
 
+const rawInline = { node: "raw_inline", getAttrs: (tok: Token) => ({ content: tok.content }) };
+const rawBlock = { node: "raw_block", getAttrs: (tok: Token) => ({ content: tok.content.replace(/\n$/, "") }) };
 // Unmapped tokens still throw, so a Post is refused rather than silently stripped.
 const parser = new MarkdownParser(schema, tokenizer, {
   ...defaultMarkdownParser.tokens,
   s: { mark: "strikethrough" },
   html_paragraph: { block: "paragraph", attrs: { htmlBlock: true } },
   html_code: { mark: "code" },
+  raw_inline: rawInline,
+  html_inline: rawInline,
+  raw_block: rawBlock,
+  html_block: rawBlock,
 });
 
 const serializer = new MarkdownSerializer(
@@ -98,6 +147,13 @@ const serializer = new MarkdownSerializer(
         return defaultMarkdownSerializer.nodes.paragraph(state, node, parent, index);
       state.write(serializeHtmlInline(node));
       state.closeBlock(node);
+    },
+    raw_block(state, node) {
+      state.text(node.attrs.content, false);
+      state.closeBlock(node);
+    },
+    raw_inline(state, node) {
+      state.text(node.attrs.content, false);
     },
     hard_break(state) {
       state.write("</br>");
@@ -136,6 +192,23 @@ const serializer = new MarkdownSerializer(
   },
 );
 
+// End of the tag at start, or of its {% end<name> %} when one follows.
+// shortcut: counts only same-name tags, so a lone `{% set x = 1 %}` before an `{% endset %}` misnests; upgrade if Posts use set blocks.
+function nunjucksBlockEnd(src: string, start: number): number {
+  const tag = /\{%-?\s*(\w+)[\s\S]*?%\}/y;
+  tag.lastIndex = start;
+  const open = tag.exec(src);
+  if (!open) return -1;
+  const name = open[1];
+  const pair = new RegExp(`\\{%-?\\s*(end)?${name}\\b[\\s\\S]*?%\\}`, "g");
+  pair.lastIndex = tag.lastIndex;
+  for (let depth = 1, match; (match = pair.exec(src));) {
+    depth += match[1] ? -1 : 1;
+    if (!depth) return pair.lastIndex;
+  }
+  return tag.lastIndex;
+}
+
 function isExternal(href: string): boolean {
   return /^(?:https?:)?\/\//i.test(href);
 }
@@ -162,6 +235,7 @@ function serializeHtmlInline(paragraph: Node): string {
     }
     if (node.isText) html += tokenizer.utils.escapeHtml(node.text!);
     else if (node.type.name === "hard_break") html += "</br>";
+    else if (node.type.name === "raw_inline") html += node.attrs.content;
     else if (node.type.name === "image") html += `<img${htmlAttributes(node.attrs)}>`;
     else throw new Error(`Unsupported HTML inline node: ${node.type.name}`);
   });

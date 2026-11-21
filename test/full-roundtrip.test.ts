@@ -100,7 +100,7 @@ test("compares published Posts and synthetic fixtures at HEAD without changing t
   const result = run();
 
   expect(result.status, result.output).toBe(0);
-  expect(result.output).toContain("13 Post pages match");
+  expect(result.output).toContain("18 Post pages match");
   expect(await readFile(join(site, "src/posts/lorem/index.md"), "utf8")).toBe("Local uncommitted text\n");
   expect(git("status", "--short")).toBe(" M site/src/posts/lorem/index.md\n");
 });
@@ -151,7 +151,7 @@ test.each(["always", true])("cleans up when build A or B fails (%s)", async fail
 });
 
 test("reports unsupported Posts and still compares the remaining pages", async () => {
-  await post("lorem", "<div>Unsupported published Post</div>\n");
+  await post("lorem", "| Unsupported |\n| - |\n| table |\n");
   await post("ipsum", "---\nechoSource: true\n---\n\n__Dolor__\n");
   await commitPosts();
 
