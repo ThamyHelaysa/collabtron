@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PostCatalog } from "./post-catalog.ts";
-import { readPostBody, writePostBody } from "./post-file.ts";
+import { readPost, writePost } from "./post-file.ts";
 
 const clientDir = new URL("../../dist/client/", import.meta.url);
 
@@ -16,6 +16,8 @@ const page = `<!doctype html>
     .ProseMirror { white-space: pre-wrap; word-wrap: break-word; outline: none; min-height: 50vh; }
     .raw-block, .raw-inline { font-family: monospace; background: #eee; color: #555; cursor: grab; }
     .raw-block { white-space: pre-wrap; padding: .5em; }
+    .front-matter { font-family: monospace; background: #f4f4f4; padding: .5em; white-space: pre-wrap; }
+    #yaml-warning { white-space: pre-wrap; font-family: monospace; color: #900; background: #fdeeee; border: 1px solid #d33; padding: .5em; }
     .ProseMirror-selectednode { outline: 2px solid #48f; }
     .shortcode-block { margin: 1em 0; padding: .5em; border: 1px solid #ccc; border-radius: 4px; }
     .shortcode-block fieldset { display: grid; gap: .25em; border: 0; padding: 0; margin: 0; }
@@ -32,6 +34,7 @@ const page = `<!doctype html>
 <body>
   <div id="toolbar" role="toolbar" aria-label="Formatting"></div>
   <output id="status"></output>
+  <div id="yaml-warning" role="alert" hidden></div>
   <div id="editor"></div>
   <script type="module" src="/main.js"></script>
 </body>
@@ -71,7 +74,7 @@ export async function startServer({ host, port, catalog }: { host: string; port:
       if (route[1] === "p" && req.method === "GET") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
       } else if (route[1] === "api/posts" && req.method === "GET") {
-        res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" }).end(await readPostBody(post));
+        res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" }).end(await readPost(post));
       } else if (route[1] === "api/posts" && req.method === "PUT") {
         let body: string;
         try {
@@ -80,7 +83,7 @@ export async function startServer({ host, port, catalog }: { host: string; port:
           res.writeHead(413, { connection: "close" }).end();
           return;
         }
-        await writePostBody(post, body);
+        await writePost(post, body);
         res.writeHead(204).end();
       } else {
         res.writeHead(405).end();

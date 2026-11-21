@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import matter from "@11ty/gray-matter";
 import { parse, serialize } from "../src/shared/markdown.ts";
 import { normalizeHtml } from "../test/normalize-html.ts";
-import { readPostBody, writePostBody } from "../src/server/post-file.ts";
+import { readPost, writePost } from "../src/server/post-file.ts";
 import { createPostCatalog } from "../src/server/post-catalog.ts";
 
 type Page = { inputPath: string; outputPath: string; content: string };
@@ -100,7 +100,7 @@ async function check() {
     for (const id of ids) {
       const post = catalog.get(id)!;
       try {
-        await writePostBody(post, serialize(parse(await readPostBody(post))));
+        await writePost(post, serialize(parse(await readPost(post))));
       } catch {
         console.error(`Round-trip failed: ${post.id}`);
         failures++;

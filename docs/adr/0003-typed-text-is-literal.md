@@ -19,5 +19,5 @@ markdown-it decodes these entities, so the site shows the original characters. N
 ## Consequences
 
 - Existing Posts render the same. Only text nodes are escaped. Raw Blocks, Raw Inlines and Shortcode Block fields are left as read. An entity renders as the character it replaces. A Post's own HTML and Nunjucks already parse into Raw Blocks and Raw Inlines, so no tag of the Post is ever escaped. The full Round-trip checks this.
-- **Not covered:** inline code and code blocks are written raw, because entities would show up literally in code. Nunjucks still runs there, so Posts protect code with `{% raw %}` themselves. Also not covered: autolink text (`<mailto:…>`, where entities stay literal; HTML links are escaped), image alt text, and Shortcode Block fields.
+- **Not covered:** inline code and code blocks are written raw, because entities would show up literally in code. Nunjucks still runs there, so Posts protect code with `{% raw %}` themselves. Also not covered: autolink text (`<mailto:…>`, where entities stay literal; HTML links are escaped), image alt text, Shortcode Block fields, and the Front Matter Block, which is YAML ([ADR 0004](0004-front-matter-checked-with-js-yaml.md)).
 - Do not "simplify" the escapes back to plain characters. The round-trip tests in `src/shared/markdown.test.ts` ("typed text in a … saves as literal text") will fail if you do.
