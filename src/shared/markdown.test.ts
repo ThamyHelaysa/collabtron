@@ -3,13 +3,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import MarkdownIt from "markdown-it";
 import markdownItAnchor from "markdown-it-anchor";
 import { parse, serialize } from "./markdown.ts";
+import { normalizeHtml } from "../../test/normalize-html.ts";
 
 // The site's markdown-it configuration, minus Nunjucks and its private slugify.
 const site = MarkdownIt({ html: true }).use(markdownItAnchor, {
   permalink: markdownItAnchor.permalink.linkInsideHeader({ symbol: "#", placement: "after", class: "header-anchor" }),
 });
-// shortcut: whitespace-only normalization (also collapses <pre>); switch to DOM normalization when `</br>` or code fixtures land (#5).
-const render = (md: string) => site.render(md).replace(/\s+/g, " ").trim();
+const render = (md: string) => normalizeHtml(site.render(md));
 
 const fixturesDir = new URL("../../test/fixtures/roundtrip/", import.meta.url);
 
