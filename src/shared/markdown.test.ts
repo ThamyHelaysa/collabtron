@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import MarkdownIt from "markdown-it";
 import markdownItAnchor from "markdown-it-anchor";
-import { parse, serialize } from "./markdown.ts";
+import { parse, schema, serialize } from "./markdown.ts";
 import { normalizeHtml } from "../../test/normalize-html.ts";
 
 // The site's markdown-it configuration, minus Nunjucks and its private slugify.
@@ -37,4 +37,96 @@ test("serializes in house style: ** bold, - bullets, ATX headings", () => {
 
 test("refuses Markdown it cannot represent instead of dropping it", () => {
   expect(() => parse("<div>lorem</div>\n")).toThrow();
+});
+
+test("parses HTML strikethrough as an editable mark and saves it as <s>", () => {
+  const doc = parse("Lorem <s>ipsum **dolor**</s>.\n");
+  expect(doc.firstChild!.child(1).marks.map((mark) => mark.type.name)).toEqual(["strikethrough"]);
+  expect(serialize(doc)).toBe("Lorem <s>ipsum **dolor**</s>.\n");
+  expect(serialize(parse("~~ipsum~~"))).toBe("<s>ipsum</s>\n");
+  const marked = schema.node("doc", null, [schema.node("paragraph", null, [
+    schema.text("ipsum", [schema.marks.strikethrough.create()]),
+  ])]);
+  expect(serialize(marked)).toBe("<s>ipsum</s>\n");
+});
+
+test("saves external links in house style, preserving escaped attributes", () => {
+  const doc = parse('[Lorem](https://example.com/?a=1&b=2 "A & B")');
+  expect(serialize(doc)).toBe('<a href="https://example.com/?a=1&amp;b=2" rel="noreferrer" target="_blank" title="A &amp; B">Lorem</a>\n');
+  expect(parse(serialize(doc)).eq(doc)).toBe(true);
+  const html = '<a target="_blank" title="A &quot;quote&quot;" rel="noreferrer" href="https://example.com/">**Lorem**</a>';
+  const link = parse(html).firstChild!.firstChild!.marks.find((mark) => mark.type.name === "link")!;
+  expect(link.attrs).toEqual({ href: "https://example.com/", title: 'A "quote"' });
+  expect(render(serialize(parse(html)))).toBe(render(html));
+});
+
+test("keeps relative links in Markdown", () => {
+  expect(serialize(parse('[Lorem](/posts/lorem "Ipsum") [dolor](#sit)')))
+    .toBe('[Lorem](/posts/lorem "Ipsum") [dolor](#sit)\n');
+});
+
+test.each(["<br/>", "</br>", "<br>", "<br />", "  \n", "\\\n"])("saves hard breaks as </br>: %j", (br) => {
+  const doc = parse(`Lorem${br}ipsum`);
+  expect(doc.firstChild!.child(1).type.name).toBe("hard_break");
+  expect(serialize(doc)).toBe("Lorem</br>ipsum\n");
+});
+
+test("preserves consecutive and trailing hard breaks", () => {
+  expect(serialize(parse("Lorem<br/></br>ipsum</br>"))).toBe("Lorem</br></br>ipsum</br>\n");
+});
+
+test.each(["<br/>", "</br>"])("recognizes a hard break on its own line: %s", (markdown) => {
+  expect(parse(markdown).firstChild!.firstChild!.type.name).toBe("hard_break");
+  expect(serialize(parse(markdown))).toBe("</br>\n");
+});
+
+test.each([
+  'Lorem <a href="javascript:alert(1)">ipsum</a>',
+  'Lorem <a href="https://example.com" data-extra="keep">ipsum</a>',
+  'Lorem <a href="https://example.com" rel="nofollow">ipsum</a>',
+  'Lorem <a href="https://example.com" target="frame">ipsum</a>',
+  'Lorem <a href="/posts/lorem" rel="noreferrer" target="_blank">ipsum</a>',
+  "Lorem <a>ipsum</a>",
+  'Lorem <s class="keep">ipsum</s>',
+  "Lorem <s>ipsum",
+  "Lorem ipsum</s>",
+  "Lorem <s><s>ipsum</s></s>",
+  "<s>one ~~two~~ three</s>",
+  '<a href="https://example.com" rel="noreferrer" target="_blank">one [two](/posts/lorem) three</a>',
+  'Lorem <s><a href="https://example.com">ipsum</s></a>',
+  "Lorem <br class='keep'>ipsum",
+  "Lorem <span>ipsum</span>",
+])("refuses unsupported or unbalanced HTML instead of losing it: %s", (markdown) => {
+  expect(() => parse(markdown)).toThrow();
+});
+
+test("recognizes supported marks and breaks in an HTML block without interpreting Markdown", () => {
+  const markdown = '<br/>\n**Lorem** &lt;ipsum&gt; &amp; dolor\n<br/>\n<s>sit</s> <a href="https://example.com" rel="noreferrer" target="_blank">amet</a>\n';
+  const doc = parse(markdown);
+  expect(doc.firstChild!.firstChild!.type.name).toBe("hard_break");
+  expect(doc.textContent).toContain("**Lorem** <ipsum> & dolor");
+  expect(render(serialize(doc))).toBe(render(markdown));
+});
+
+test("keeps newly applied formatting editable in a block starting with a break", () => {
+  const doc = schema.node("doc", null, [schema.node("paragraph", { htmlBlock: true }, [
+    schema.nodes.hard_break.create(),
+    schema.text("\n"),
+    schema.text("<ipsum> & dolor", [schema.marks.strong.create(), schema.marks.code.create()]),
+  ])]);
+  const markdown = serialize(doc);
+  expect(markdown).toBe("</br>\n<strong><code>&lt;ipsum&gt; &amp; dolor</code></strong>\n");
+  expect(parse(markdown).eq(doc)).toBe(true);
+});
+
+test("preserves literal text and formatting after deleting an HTML block's leading break", () => {
+  const doc = parse("<br/>\n**literal**\n");
+  const edited = schema.node("doc", null, [schema.node("paragraph", doc.firstChild!.attrs, [
+    schema.text("**literal**"),
+    schema.text(" code", [schema.marks.code.create()]),
+  ])]);
+  const reopened = parse(serialize(edited));
+  expect(reopened.textContent).toBe("**literal** code");
+  expect(reopened.firstChild!.firstChild!.marks).toEqual([]);
+  expect(reopened.firstChild!.lastChild!.marks.map((mark) => mark.type.name)).toEqual(["code"]);
 });
