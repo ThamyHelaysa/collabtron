@@ -64,7 +64,7 @@ test("saves external links in house style, preserving escaped attributes", () =>
   expect(parse(serialize(doc)).eq(doc)).toBe(true);
   const html = '<a target="_blank" title="A &quot;quote&quot;" rel="noreferrer" href="https://example.com/">**Lorem**</a>';
   const link = parse(html).firstChild!.firstChild!.marks.find((mark) => mark.type.name === "link")!;
-  expect(link.attrs).toEqual({ href: "https://example.com/", title: 'A "quote"' });
+  expect(link.attrs).toEqual({ href: "https://example.com/", title: 'A "quote"', wrapped: false });
   expect(render(serialize(parse(html)))).toBe(render(html));
 });
 
@@ -73,10 +73,19 @@ test("keeps relative links in Markdown", () => {
     .toBe('[Lorem](/posts/lorem "Ipsum") [dolor](#sit)\n');
 });
 
-test.each(["<br/>", "</br>", "<br>", "<br />", "  \n", "\\\n"])("saves hard breaks as </br>: %j", (br) => {
+test.each([
+  ["<br/>", "Lorem</br>ipsum\n"],
+  ["</br>", "Lorem</br>ipsum\n"],
+  ["<br>", "Lorem</br>ipsum\n"],
+  ["<br />", "Lorem</br>ipsum\n"],
+  // A Markdown break renders as <br> plus the newline it ends.
+  ["  \n", "Lorem</br> ipsum\n"],
+  ["\\\n", "Lorem</br> ipsum\n"],
+])("saves hard breaks as </br>: %j", (br, saved) => {
   const doc = parse(`Lorem${br}ipsum`);
   expect(doc.firstChild!.child(1).type.name).toBe("hard_break");
-  expect(serialize(doc)).toBe("Lorem</br>ipsum\n");
+  expect(serialize(doc)).toBe(saved);
+  expect(render(saved)).toBe(render(`Lorem${br}ipsum`));
 });
 
 test("preserves consecutive and trailing hard breaks", () => {
@@ -211,4 +220,21 @@ test("keeps Raw Inline atoms in headings", () => {
 test("refuses Nunjucks or HTML in image alt text instead of dropping it", () => {
   expect(() => parse("![Lorem {{ ipsum }}](/dolor.png)")).toThrow();
   expect(() => parse("![Lorem <span>ipsum</span>](/dolor.png)")).toThrow();
+});
+
+const external = '<a href="https://example.com/" rel="noreferrer" target="_blank">';
+test.each([
+  "**[Lorem](/ipsum)**",
+  "[**Lorem**](/ipsum)",
+  "**[Lorem](/ipsum) dolor**",
+  "**Lorem [ipsum](/dolor)**",
+  "[**Lorem** ipsum](/dolor)",
+  "***[Lorem](/ipsum)***",
+  "<s>[Lorem](/ipsum) dolor</s>",
+  `**${external}Lorem</a>**`,
+  `${external}**Lorem**</a>`,
+  `</br>\n<strong>${external}Lorem</a></strong>`,
+  `</br>\n${external}<strong>Lorem</strong></a>`,
+])("keeps marks inside or outside a link as written: %j", (markdown) => {
+  expect(serialize(parse(markdown))).toBe(`${markdown}\n`);
 });

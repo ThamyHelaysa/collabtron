@@ -1,6 +1,6 @@
 import MarkdownIt, { type Token } from "markdown-it";
 import { parseFragment } from "parse5";
-import { Schema, type Attrs, type Mark, type Node } from "prosemirror-model";
+import { Fragment, Schema, type Attrs, type Mark, type Node } from "prosemirror-model";
 import { MarkdownParser, MarkdownSerializer, defaultMarkdownParser, defaultMarkdownSerializer, schema as baseSchema } from "prosemirror-markdown";
 
 export const schema = new Schema({
@@ -26,9 +26,11 @@ export const schema = new Schema({
   }),
   marks: baseSchema.spec.marks.remove("link").addToStart("link", {
     ...baseSchema.spec.marks.get("link")!,
-    toDOM: (mark) => ["a", {
-      ...mark.attrs,
-      ...(isExternal(mark.attrs.href) ? { rel: "noreferrer", target: "_blank" } : {}),
+    // wrapped: marks covering exactly this link were written outside it.
+    attrs: { ...baseSchema.spec.marks.get("link")!.attrs, wrapped: { default: false } },
+    toDOM: ({ attrs: { wrapped, ...attrs } }) => ["a", {
+      ...attrs,
+      ...(isExternal(attrs.href) ? { rel: "noreferrer", target: "_blank" } : {}),
     }, 0],
   }).addBefore("em", "strikethrough", {
     parseDOM: [{ tag: "s" }],
@@ -82,6 +84,10 @@ tokenizer.core.ruler.after("inline", "house_style", (state) => {
   });
   for (const block of state.tokens) {
     const stack: string[] = [];
+    // A Markdown break ends its line: keep that newline so the site still renders <br> plus whitespace.
+    block.children &&= block.children.flatMap((token) =>
+      token.type === "hardbreak" ? [token, new state.Token("softbreak", "br", 0)] : [token]);
+    let previous = "";
     for (const token of block.children ?? []) {
       // Alt text is plain text, so a raw piece in it would be dropped.
       if (token.children?.some(({ type }) => type === "raw_inline" || type === "html_inline"))
@@ -113,6 +119,8 @@ tokenizer.core.ruler.after("inline", "house_style", (state) => {
       } else if (closing) {
         token.type = `${tag === "a" ? "link" : tag === "code" ? "html_code" : tag}_close`;
       }
+      if (token.type === "link_open" && /^(s|strong|em)_open$/.test(previous)) token.meta = { wrapped: true };
+      previous = token.type;
       const mark = /^(s|link|strong|em|html_code)_(open|close)$/.exec(token.type);
       if (mark?.[2] === "open") {
         if (stack.includes(mark[1])) throw new Error("Nested house-style mark is not supported");
@@ -129,6 +137,10 @@ const rawBlock = { node: "raw_block", getAttrs: (tok: Token) => ({ content: tok.
 const parser = new MarkdownParser(schema, tokenizer, {
   ...defaultMarkdownParser.tokens,
   s: { mark: "strikethrough" },
+  link: {
+    mark: "link",
+    getAttrs: (tok) => ({ href: tok.attrGet("href"), title: tok.attrGet("title") || null, wrapped: !!tok.meta?.wrapped }),
+  },
   html_paragraph: { block: "paragraph", attrs: { htmlBlock: true } },
   html_code: { mark: "code" },
   raw_inline: rawInline,
@@ -243,6 +255,27 @@ function serializeHtmlInline(paragraph: Node): string {
   return html;
 }
 
+// ProseMirror always orders marks by schema rank (link first), so put back outside a link
+// each mark that covers it whole and either runs past it or was written outside it.
+function nestLinkMarks(node: Node): Node {
+  if (node.isLeaf) return node;
+  const children: Node[] = [];
+  node.forEach((child) => children.push(node.inlineContent ? child : nestLinkMarks(child)));
+  for (let start = 0, end; start < children.length; start = end) {
+    const link = children[start].marks.find((mark) => mark.type.name === "link");
+    end = start + 1;
+    if (!link) continue;
+    while (end < children.length && link.isInSet(children[end].marks)) end++;
+    const run = children.slice(start, end);
+    const outside = run[0].marks.filter((mark) => ["strikethrough", "em", "strong"].includes(mark.type.name) &&
+      run.every((child) => mark.isInSet(child.marks)) && (link.attrs.wrapped ||
+        mark.isInSet(children[start - 1]?.marks ?? []) || mark.isInSet(children[end]?.marks ?? [])));
+    for (let i = start; i < end; i++)
+      children[i] = children[i].mark([...outside, ...children[i].marks.filter((mark) => !outside.includes(mark))]);
+  }
+  return node.copy(Fragment.fromArray(children));
+}
+
 // Odd position in a run of adjacent same-type lists: alternating markers keeps every list separate.
 function needsAltMarker(node: Node, parent: Node, index: number) {
   let run = 0;
@@ -255,5 +288,5 @@ export function parse(markdown: string): Node {
 }
 
 export function serialize(doc: Node): string {
-  return serializer.serialize(doc) + "\n";
+  return serializer.serialize(nestLinkMarks(doc)) + "\n";
 }
