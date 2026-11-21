@@ -14,7 +14,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`PORT=$
 const postsDir = process.env.POSTS_DIR;
 if (!postsDir) throw new Error("POSTS_DIR not set: the site's posts directory");
 const postId = process.argv[2];
-if (!postId) throw new Error("usage: npm run dev -- <post-id>");
+if (!postId) throw new Error("usage: pnpm dev <post-id>");
 const catalog = await createPostCatalog(postsDir, [postId]);
 
 await startServer({ host, port, catalog });

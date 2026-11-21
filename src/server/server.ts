@@ -80,7 +80,7 @@ export async function startServer({ host, port, catalog }: { host: string; port:
         res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" }).end(js);
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        res.writeHead(404).end("client bundle missing: run npm run build:client");
+        res.writeHead(404).end("client bundle missing: run pnpm build:client");
       }
       return;
     }
