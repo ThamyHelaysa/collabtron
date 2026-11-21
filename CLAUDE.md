@@ -5,7 +5,7 @@ Real-time collaborative editor for the Posts of an Eleventy site. Workflow, rule
 ## Layout
 
 - `src/shared/` — runs on both sides. `markdown.ts`: ProseMirror `schema`, `parse` (Markdown to doc), `serialize` (doc to Markdown).
-- `src/server/` — Node 24, TypeScript run directly (no build). `main.ts` reads `.env` and refuses non-loopback hosts; `post-catalog.ts` is the only way a Post ID becomes a Post; `post-file.ts` reads and writes a Post's body; `server.ts` is the HTTP server.
+- `src/server/` — Node 24, TypeScript run directly (no build). `main.ts` reads `.env` and refuses non-loopback hosts; `post-catalog.ts` is the only way a Post ID becomes a Post; `post-file.ts` reads and writes a Post file, front matter included; `server.ts` is the HTTP server.
 - `src/client/` — browser editor, bundled by esbuild into `dist/client/`.
 - `test/fixtures/roundtrip/` — one `.md` per case; `src/shared/markdown.test.ts` checks each Round-trip.
 
@@ -16,3 +16,4 @@ Real-time collaborative editor for the Posts of an Eleventy site. Workflow, rule
 - No auth yet: dev mode binds loopback only, and that check in `main.ts` must stay.
 - Round-trip is faithful when the site renders the same HTML, not when bytes match.
 - Typed text is literal: the serializer writes `&lt;`, `&amp;`, `&#123;` where text would open HTML or Nunjucks; Shortcode Blocks come only from the toolbar. Code, autolinks, image alt and fields are exceptions ([ADR 0003](docs/adr/0003-typed-text-is-literal.md)).
+- Front matter is the optional first doc node `front_matter`, split off by `parse`. YAML is checked with `js-yaml` `load`, the engine gray-matter uses, because gray-matter cannot bundle for the browser ([ADR 0004](docs/adr/0004-front-matter-checked-with-js-yaml.md)).

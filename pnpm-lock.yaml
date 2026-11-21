@@ -175,6 +175,9 @@ importers:
 
   .:
     dependencies:
+      js-yaml:
+        specifier: ^4.3.2
+        version: 4.3.2
       markdown-it:
         specifier: ^15.0.3
         version: 15.0.3
@@ -209,6 +212,9 @@ importers:
       '@11ty/gray-matter':
         specifier: ^2.1.0
         version: 2.1.0
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
       '@types/markdown-it':
         specifier: ^14.2.0
         version: 14.2.0
@@ -546,6 +552,9 @@ packages:
 
   '@types/estree@1.0.10':
     resolution: {integrity: sha512-lTyOMnOcmRBzdCv6/4zUZCrEhV0xrqQiUZBZtVcbmLHBXKLnN8q89v/wKRF/Q0HbwVsqbIG3o5HDoFl9sduM+g==}
+
+  '@types/js-yaml@4.0.9':
+    resolution: {integrity: sha512-k4MGaQl5TGo/iipqb2UDG2UwjXziSWkh0uysQelTlJpX1qGlpUZYm8PnO4DxG1qBomtJUdYJ6qR6xdIah10JLg==}
 
   '@types/linkify-it@5.0.0':
     resolution: {integrity: sha512-sVDA58zAw4eWAffKOaQH5/5j3XeayukzDk+ewSsnv3p4yJEZHCCzMDiZM8e0OUrRvmpGZ85jf4yDHkHsgBNr9Q==}
@@ -1337,6 +1346,8 @@ snapshots:
   '@types/deep-eql@4.0.2': {}
 
   '@types/estree@1.0.10': {}
+
+  '@types/js-yaml@4.0.9': {}
 
   '@types/linkify-it@5.0.0': {}
 

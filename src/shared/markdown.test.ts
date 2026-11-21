@@ -3,7 +3,7 @@ import { EditorState, NodeSelection } from "prosemirror-state";
 import { readdirSync, readFileSync } from "node:fs";
 import MarkdownIt from "markdown-it";
 import markdownItAnchor from "markdown-it-anchor";
-import { parse, schema, serialize } from "./markdown.ts";
+import { frontMatterError, parse, schema, serialize } from "./markdown.ts";
 import { normalizeHtml } from "../../test/normalize-html.ts";
 
 // The site's markdown-it configuration, minus Nunjucks and its private slugify.
@@ -430,4 +430,27 @@ test.each([
 test("escapes typed text of a link equal to its href unless it saves as an autolink", () => {
   expect(serialize(linked("/{% x %}", { href: "/{% x %}" }))).toBe("[/&#123;% x %}](/{% x %})\n");
   expect(serialize(linked("mailto:a@b.co", { href: "mailto:a@b.co" }))).toBe("<mailto:a@b.co>\n");
+});
+
+test("keeps the front matter as the first node, a Front Matter Block saved byte for byte", () => {
+  const markdown = readFileSync(new URL("front-matter.md", fixturesDir), "utf8");
+  const doc = parse(markdown);
+  expect(doc.firstChild!.type.name).toBe("front_matter");
+  expect(doc.firstChild!.textContent).toBe(markdown.split("\n---\n")[0].slice(4));
+  expect(doc.child(1).type.name).toBe("heading");
+  expect(serialize(doc)).toBe(markdown);
+  expect(parse("Lorem\n").firstChild!.type.name).toBe("paragraph");
+  expect(serialize(parse("Lorem\n\n---\nipsum: 1\n---\n"))).toBe("Lorem\n\n---\n\n## ipsum: 1\n");
+});
+
+test.each([
+  ["---\ntitle: Lorem\ntags: [ipsum\n---\n\nDolor\n", true],
+  ["---\ntitle: Lorem: ipsum\n---\n\nDolor\n", true],
+  ["---\ntitle: Lorem\ntags: [ipsum]\n---\n\nDolor\n", false],
+  ["---\n# only a comment\n---\n\nDolor\n", false],
+  ["Dolor\n", false],
+])("warns about YAML the site build cannot read: %j", (markdown, invalid) => {
+  const error = frontMatterError(parse(markdown));
+  if (invalid) expect(error).toMatch(/\S/);
+  else expect(error).toBe(null);
 });

@@ -2,14 +2,27 @@ import { baseKeymap, setBlockType, toggleMark } from "prosemirror-commands";
 import { history, redo, undo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { wrapInList } from "prosemirror-schema-list";
-import { EditorState, type Command } from "prosemirror-state";
+import { EditorState, Plugin, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
-import { parse, schema, serialize } from "../shared/markdown.ts";
+import { frontMatterError, parse, schema, serialize } from "../shared/markdown.ts";
 import { exitCaption, insertDetails, insertImageContainer, insertVideoContainer, setQuoteVariant, shortcodeViews } from "./shortcode-blocks.ts";
 
 const postId = decodeURIComponent(location.pathname.split("/")[2]);
 const api = `/api/posts/${encodeURIComponent(postId)}`;
 const status = document.querySelector<HTMLElement>("#status")!;
+const yamlWarning = document.querySelector<HTMLElement>("#yaml-warning")!;
+
+const showYamlWarning = (state: EditorState) => {
+  const error = frontMatterError(state.doc);
+  yamlWarning.hidden = !error;
+  yamlWarning.textContent = error ? `Front matter is not valid YAML, the site build will fail:\n${error}` : "";
+};
+const yamlCheck = new Plugin({
+  view: (view) => {
+    showYamlWarning(view.state);
+    return { update: (view, prev) => { if (view.state.doc !== prev.doc) showYamlWarning(view.state); } };
+  },
+});
 
 const toggleLink: Command = (state, dispatch) => {
   const { link } = schema.marks;
@@ -70,6 +83,7 @@ const view = new EditorView(document.querySelector("#editor"), {
     doc,
     plugins: [
       history(),
+      yamlCheck,
       keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": save, Enter: exitCaption }),
       keymap(baseKeymap),
     ],

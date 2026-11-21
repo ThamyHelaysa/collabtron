@@ -1,10 +1,19 @@
+import { load } from "js-yaml";
 import MarkdownIt, { type StateCore, type Token } from "markdown-it";
 import { parseFragment } from "parse5";
 import { Fragment, Schema, type Attrs, type Mark, type Node } from "prosemirror-model";
 import { MarkdownParser, MarkdownSerializer, type MarkdownSerializerState, defaultMarkdownParser, defaultMarkdownSerializer, schema as baseSchema } from "prosemirror-markdown";
 
 export const schema = new Schema({
-  nodes: baseSchema.spec.nodes.update("paragraph", {
+  nodes: baseSchema.spec.nodes.update("doc", { content: "front_matter? block+" }).addBefore("paragraph", "front_matter", {
+    // The Post's YAML, edited as raw text; the schema only allows it first.
+    content: "text*",
+    marks: "",
+    code: true,
+    defining: true,
+    toDOM: () => ["pre", { class: "front-matter" }, 0],
+    parseDOM: [{ tag: "pre.front-matter", priority: 60, preserveWhitespace: "full" }],
+  }).update("paragraph", {
     ...baseSchema.spec.nodes.get("paragraph")!,
     attrs: { htmlBlock: { default: false } },
   }).update("blockquote", {
@@ -331,6 +340,11 @@ const serializer = new MarkdownSerializer(
     details(state, node) {
       serializeHtmlContainer(state, node, `<details>\n  <summary>${serializeHtmlInline(node.firstChild!)}</summary>`, "</details>", 1);
     },
+    front_matter(state, node) {
+      if (!node.textContent) return;
+      state.text(`---\n${node.textContent}\n---`, false);
+      state.closeBlock(node);
+    },
     raw_block(state, node) {
       state.text(node.attrs.content, false);
       state.closeBlock(node);
@@ -534,10 +548,29 @@ function needsAltMarker(node: Node, parent: Node, index: number) {
   return run % 2 === 1;
 }
 
+// What gray-matter reads as front matter, given --- delimiters on their own lines.
+// shortcut: saves with \n line endings, so a CRLF front matter is not kept byte for byte; upgrade if a Post uses CRLF.
+const frontMatter = /^---\r?\n(?:([\s\S]*?)\r?\n)?---[ \t]*(?:\r?\n|$)/;
+
 export function parse(markdown: string): Node {
-  return parser.parse(markdown);
+  const match = frontMatter.exec(markdown);
+  const doc = parser.parse(markdown.slice(match?.[0].length ?? 0));
+  if (!match) return doc;
+  const yaml = match[1] ? [schema.text(match[1])] : [];
+  return doc.copy(Fragment.from(schema.nodes.front_matter.create(null, yaml)).append(doc.content));
 }
 
 export function serialize(doc: Node): string {
   return serializer.serialize(nestLinkMarks(doc)) + "\n";
+}
+
+// gray-matter's YAML engine is js-yaml's load, so this is the error the site build would stop on.
+export function frontMatterError(doc: Node): string | null {
+  if (doc.firstChild?.type !== schema.nodes.front_matter) return null;
+  try {
+    load(doc.firstChild.textContent);
+    return null;
+  } catch (err) {
+    return (err as Error).message;
+  }
 }
