@@ -207,7 +207,7 @@ function shortcodeBlock(state: StateCore, block: Token): Token[] {
   ];
 }
 
-// Site HTML blocks with editable insides. The opening tag's HTML block holds the first lines, read as HTML,
+// House-style HTML Shortcode Blocks with editable insides. The opening tag's HTML block holds the first lines, read as HTML,
 // and may end with the end tag; otherwise Markdown blocks follow until the end tag alone in its HTML block.
 const containers = [
   { name: "blockquote", open: /^<blockquote class="(error|warning)-block block">[ \t]*\n/, end: "</blockquote>", attrs: (m: RegExpExecArray) => ({ variant: m[1] }) },
@@ -237,8 +237,11 @@ function htmlContainer(state: StateCore, start: number, closes: Map<number, stri
       const { type, level, content } = state.tokens[i];
       if (type !== "html_block" || level !== block.level || !tag.test(content)) continue;
       if (content.trim() === end) depth--;
-      else if (open.test(content) && inside(content)) depth += inside(content)!.closed ? 0 : 1;
-      else return null;
+      else {
+        const nested = open.test(content) ? inside(content) : null;
+        if (!nested) return null;
+        if (!nested.closed) depth++;
+      }
     }
     if (depth) return null;
     closes.set(i, name);

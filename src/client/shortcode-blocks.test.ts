@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, expect, test } from "vitest";
+import { baseKeymap } from "prosemirror-commands";
 import { EditorState, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { parse, serialize } from "../shared/markdown.ts";
-import { baseKeymap } from "prosemirror-commands";
 import { exitCaption, insertDetails, insertImageContainer, insertVideoContainer, setQuoteVariant, shortcodeViews } from "./shortcode-blocks.ts";
 
 let view: EditorView;
@@ -93,8 +93,8 @@ test("switching a callout's variant keeps its HTML lines", () => {
 test("toolbar inserts details after the current block, Enter in its summary continues in the body", () => {
   open("Lorem\n");
   expect(insertDetails(view.state, view.dispatch)).toBe(true);
-  const summary = view.state.doc.resolve(view.state.doc.child(0).nodeSize + 2);
-  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, summary.pos)).insertText("Ipsum"));
+  const summary = view.state.doc.child(0).nodeSize + 2;
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, summary)).insertText("Ipsum"));
   baseKeymap.Enter(view.state, view.dispatch);
   view.dispatch(view.state.tr.insertText("Dolor"));
   expect(serialize(view.state.doc)).toBe("Lorem\n\n<details>\n  <summary>Ipsum</summary>\n\nDolor\n\n</details>\n");
