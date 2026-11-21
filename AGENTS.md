@@ -1,3 +1,11 @@
+# AGENTS.md
+
+## Hard rules
+
+- **Never add AI attribution** in anything written to this repo or GitHub:
+  no `Co-Authored-By` trailers, no "Generated with Claude Code" footers,
+  no session links — commits, PR bodies, issue bodies, comments included.
+
 ## Agent skills
 
 ### Issue tracker
