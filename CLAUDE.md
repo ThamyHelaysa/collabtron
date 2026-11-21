@@ -15,5 +15,5 @@ Real-time collaborative editor for the Posts of an Eleventy site. Workflow, rule
 - `pnpm dev` takes exactly one Post ID; the catalog only knows that Post.
 - No auth yet: dev mode binds loopback only, and that check in `main.ts` must stay.
 - Round-trip is faithful when the site renders the same HTML, not when bytes match.
-- Typed text is literal: the serializer writes `&lt;`, `&amp;`, `&#123;` where text would open HTML or Nunjucks; Shortcode Blocks come only from the toolbar. Code, autolinks, image alt and fields are exceptions ([ADR 0003](docs/adr/0003-typed-text-is-literal.md)).
+- Typed text is literal: the serializer writes `&lt;`, `&amp;`, `&#123;` where text would open HTML or Nunjucks; Shortcode Blocks come only from the toolbar. Code, autolinks, image alt, fields and front matter are exceptions ([ADR 0003](docs/adr/0003-typed-text-is-literal.md)).
 - Front matter is the optional first doc node `front_matter`, split off by `parse`. YAML is checked with `js-yaml` `load`, the engine gray-matter uses, because gray-matter cannot bundle for the browser ([ADR 0004](docs/adr/0004-front-matter-checked-with-js-yaml.md)).

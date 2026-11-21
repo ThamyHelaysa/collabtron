@@ -436,7 +436,7 @@ test("keeps the front matter as the first node, a Front Matter Block saved byte 
   const markdown = readFileSync(new URL("front-matter.md", fixturesDir), "utf8");
   const doc = parse(markdown);
   expect(doc.firstChild!.type.name).toBe("front_matter");
-  expect(doc.firstChild!.textContent).toBe(markdown.split("\n---\n")[0].slice(4));
+  expect(doc.firstChild!.textContent).toMatch(/^title: "Lorem: ipsum"\n[\s\S]*\n  - ipsum$/);
   expect(doc.child(1).type.name).toBe("heading");
   expect(serialize(doc)).toBe(markdown);
   expect(parse("Lorem\n").firstChild!.type.name).toBe("paragraph");
@@ -453,4 +453,19 @@ test.each([
   const error = frontMatterError(parse(markdown));
   if (invalid) expect(error).toMatch(/\S/);
   else expect(error).toBe(null);
+});
+
+test("keeps an empty Front Matter Block", () => {
+  expect(serialize(parse("---\n---\n\nLorem\n"))).toBe("---\n---\n\nLorem\n");
+});
+
+test.each([
+  "\uFEFF---\ntitle: x\n---\n",
+  "--- \ntitle: x\n---\n",
+  "---\ntitle: x\n----\n",
+  "---\ntitle: x\n--- \n",
+  "---\ntitle: x\n---x\ndraft: true\n---\n",
+  "---\ntitle: x\n",
+])("refuses front matter it cannot keep byte for byte instead of saving it as Markdown: %j", (markdown) => {
+  expect(() => parse(markdown)).toThrow();
 });

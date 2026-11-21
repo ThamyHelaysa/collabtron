@@ -5,6 +5,7 @@ import { wrapInList } from "prosemirror-schema-list";
 import { EditorState, Plugin, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { frontMatterError, parse, schema, serialize } from "../shared/markdown.ts";
+import { keepFrontMatter } from "./front-matter.ts";
 import { exitCaption, insertDetails, insertImageContainer, insertVideoContainer, setQuoteVariant, shortcodeViews } from "./shortcode-blocks.ts";
 
 const postId = decodeURIComponent(location.pathname.split("/")[2]);
@@ -73,7 +74,7 @@ let doc;
 try {
   doc = parse(await res.text());
 } catch (err) {
-  status.textContent = "This Post has Markdown the editor cannot keep yet (unsupported HTML or tables); not opened.";
+  status.textContent = "This Post has Markdown the editor cannot keep yet (unsupported HTML, tables or front matter); not opened.";
   throw err;
 }
 
@@ -84,6 +85,7 @@ const view = new EditorView(document.querySelector("#editor"), {
     plugins: [
       history(),
       yamlCheck,
+      keepFrontMatter,
       keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": save, Enter: exitCaption }),
       keymap(baseKeymap),
     ],

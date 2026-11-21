@@ -341,8 +341,7 @@ const serializer = new MarkdownSerializer(
       serializeHtmlContainer(state, node, `<details>\n  <summary>${serializeHtmlInline(node.firstChild!)}</summary>`, "</details>", 1);
     },
     front_matter(state, node) {
-      if (!node.textContent) return;
-      state.text(`---\n${node.textContent}\n---`, false);
+      state.text(node.textContent ? `---\n${node.textContent}\n---` : "---\n---", false);
       state.closeBlock(node);
     },
     raw_block(state, node) {
@@ -548,12 +547,20 @@ function needsAltMarker(node: Node, parent: Node, index: number) {
   return run % 2 === 1;
 }
 
-// What gray-matter reads as front matter, given --- delimiters on their own lines.
+// Front matter the Front Matter Block saves back byte for byte: --- delimiters alone on their lines.
 // shortcut: saves with \n line endings, so a CRLF front matter is not kept byte for byte; upgrade if a Post uses CRLF.
-const frontMatter = /^---\r?\n(?:([\s\S]*?)\r?\n)?---[ \t]*(?:\r?\n|$)/;
+const frontMatter = /^---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/;
+
+// gray-matter reads front matter from any leading --- and closes it at the first "\n---"; any other shape would save as Markdown.
+function splitFrontMatter(markdown: string) {
+  if (!/^\uFEFF?---(?!-)/.test(markdown)) return null;
+  const match = frontMatter.exec(markdown);
+  if (!match || `\n${match[1] ?? ""}`.includes("\n---")) throw new Error("Unsupported front matter");
+  return match;
+}
 
 export function parse(markdown: string): Node {
-  const match = frontMatter.exec(markdown);
+  const match = splitFrontMatter(markdown);
   const doc = parser.parse(markdown.slice(match?.[0].length ?? 0));
   if (!match) return doc;
   const yaml = match[1] ? [schema.text(match[1])] : [];
