@@ -5,6 +5,7 @@ import { wrapInList } from "prosemirror-schema-list";
 import { EditorState, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { parse, schema, serialize } from "../shared/markdown.ts";
+import { insertImageContainer, insertVideoContainer, shortcodeViews } from "./shortcode-blocks.ts";
 
 const postId = decodeURIComponent(location.pathname.split("/")[2]);
 const api = `/api/posts/${encodeURIComponent(postId)}`;
@@ -41,6 +42,8 @@ const tools: [string, Command][] = [
   ["H3", setBlockType(heading, { level: 3 })],
   ["Bullet list", wrapInList(bullet_list)],
   ["Ordered list", wrapInList(ordered_list)],
+  ["Image", insertImageContainer],
+  ["Video", insertVideoContainer],
   ["Save", save],
 ];
 
@@ -58,6 +61,7 @@ try {
 }
 
 const view = new EditorView(document.querySelector("#editor"), {
+  nodeViews: shortcodeViews,
   state: EditorState.create({
     doc,
     plugins: [

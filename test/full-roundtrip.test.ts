@@ -100,7 +100,7 @@ test("compares published Posts and synthetic fixtures at HEAD without changing t
   const result = run();
 
   expect(result.status, result.output).toBe(0);
-  expect(result.output).toContain("20 Post pages match");
+  expect(result.output).toContain("23 Post pages match");
   expect(await readFile(join(site, "src/posts/lorem/index.md"), "utf8")).toBe("Local uncommitted text\n");
   expect(git("status", "--short")).toBe(" M site/src/posts/lorem/index.md\n");
 });

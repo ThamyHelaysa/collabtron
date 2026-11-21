@@ -1,4 +1,4 @@
-import MarkdownIt, { type Token } from "markdown-it";
+import MarkdownIt, { type StateCore, type Token } from "markdown-it";
 import { parseFragment } from "parse5";
 import { Fragment, Schema, type Attrs, type Mark, type Node } from "prosemirror-model";
 import { MarkdownParser, MarkdownSerializer, defaultMarkdownParser, defaultMarkdownSerializer, schema as baseSchema } from "prosemirror-markdown";
@@ -16,6 +16,21 @@ export const schema = new Schema({
     draggable: true,
     toDOM: (node) => ["pre", { class: "raw-block" }, node.attrs.content],
     parseDOM: [{ tag: "pre.raw-block", priority: 60, getAttrs: (dom) => ({ content: dom.textContent }) }],
+  }).addToEnd("image_container", {
+    group: "block",
+    atom: true,
+    draggable: true,
+    attrs: { caption: { default: "" }, src: { default: "" }, mobileSrc: { default: null }, alt: { default: "" } },
+    toDOM: (node) => ["figure", { class: "image-container", "data-attrs": JSON.stringify(node.attrs) }],
+    parseDOM: [{ tag: "figure.image-container", getAttrs: (dom) => JSON.parse(dom.dataset.attrs ?? "{}") }],
+  }).addToEnd("video_container", {
+    group: "block",
+    // The site writes the caption into HTML, so only what HTML can say: no Markdown images.
+    content: "(text | raw_inline | hard_break)*",
+    draggable: true,
+    attrs: { src: { default: "" }, mobileSrc: { default: null }, props: { default: null } },
+    toDOM: (node) => ["figure", { class: "video-container", "data-attrs": JSON.stringify(node.attrs) }, ["figcaption", 0]],
+    parseDOM: [{ tag: "figure.video-container", contentElement: "figcaption", getAttrs: (dom) => JSON.parse(dom.dataset.attrs ?? "{}") }],
   }).addBefore("hard_break", "raw_inline", {
     inline: true,
     group: "inline",
@@ -69,22 +84,14 @@ for (const md of [tokenizer, htmlTokenizer]) md.inline.ruler.before("text", "nun
   state.pos = tag.lastIndex;
   return true;
 });
-htmlTokenizer.inline.ruler.enableOnly(["nunjucks_inline", "text", "html_inline", "newline", "entity"]);
+// No "newline" rule: in HTML a line ending, even after two spaces, is only whitespace.
+htmlTokenizer.inline.ruler.enableOnly(["nunjucks_inline", "text", "html_inline", "entity"]);
 tokenizer.core.ruler.after("inline", "house_style", (state) => {
   // HTML blocks treat Markdown syntax literally, including after a leading break.
   state.tokens = state.tokens.flatMap((block) => {
+    if (block.type === "raw_block") return shortcodeBlock(state, block);
     if (block.type !== "html_block" || !breakTag.test(block.content.split("\n", 1)[0].trim())) return [block];
-    const inline = new state.Token("inline", "", 0);
-    inline.meta = { htmlBlock: true };
-    inline.children = [];
-    htmlTokenizer.inline.parse(block.content.trimEnd(), htmlTokenizer, state.env, inline.children);
-    for (const token of inline.children) {
-      if (token.type === "softbreak") {
-        token.type = "text";
-        token.content = "\n";
-      }
-    }
-    return [new state.Token("html_paragraph_open", "p", 1), inline, new state.Token("html_paragraph_close", "p", -1)];
+    return [new state.Token("html_paragraph_open", "p", 1), htmlInline(state, block.content.trimEnd()), new state.Token("html_paragraph_close", "p", -1)];
   });
   for (const block of state.tokens) {
     const stack: { type: string; index: number }[] = [];
@@ -150,6 +157,62 @@ tokenizer.core.ruler.after("inline", "house_style", (state) => {
   }
 });
 
+// Known shortcodes, as written by the site's config. A tag that does not match stays a Raw Block.
+const shortcodes = {
+  imageContainer: { node: "image_container", args: ["caption", "src", "mobileSrc", "alt"], required: 4, paired: false },
+  // A missing mobileSrc or props renders like null.
+  videoContainer: { node: "video_container", args: ["src", "mobileSrc", "props"], required: 1, paired: true },
+} as const;
+
+function shortcodeBlock(state: StateCore, block: Token): Token[] {
+  const tag = /^\{%\s*(\w+)\s([\s\S]*?)%\}(?:([\s\S]*?)\{%\s*end\1\s*%\})?\s*$/.exec(block.content);
+  const known = tag && Object.hasOwn(shortcodes, tag[1]) ? shortcodes[tag[1] as keyof typeof shortcodes] : null;
+  const values = known && known.paired === (tag![3] != null) && parseArguments(tag![2]);
+  // Fewer arguments is not the same: the site renders a missing caption or alt as "undefined".
+  if (!values || values.length < known.required || values.length > known.args.length) return [block];
+  const attrs = Object.fromEntries(known.args.map((name, i) => [name, values[i] ?? null]));
+  if (!known.paired) return [Object.assign(new state.Token(known.node, "", 0), { meta: attrs })];
+  // Saved as "\n  caption\n": the site sees the same HTML only if the caption had whitespace around it and no blank line.
+  const body = tag![3];
+  if (!/^\s/.test(body) || !/\s$/.test(body) || /\n[ \t]*\n/.test(body.trim())) return [block];
+  return [
+    Object.assign(new state.Token(`${known.node}_open`, "", 1), { meta: attrs }),
+    htmlInline(state, body.trim()),
+    new state.Token(`${known.node}_close`, "", -1),
+  ];
+}
+
+// Inline content the site sees inside HTML, where Markdown syntax is literal.
+function htmlInline(state: StateCore, content: string): Token {
+  const inline = new state.Token("inline", "", 0);
+  inline.meta = { htmlBlock: true };
+  inline.children = [];
+  htmlTokenizer.inline.parse(content, htmlTokenizer, state.env, inline.children);
+  return inline;
+}
+
+// Nunjucks string literals and null, comma-separated; anything else (variables, filters) is not editable.
+function parseArguments(src: string): (string | null)[] | null {
+  const arg = /\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|(null))\s*(,|$)/y;
+  const values: (string | null)[] = [];
+  for (let separator = ","; separator;) {
+    const match = arg.exec(src);
+    if (!match) return null;
+    const text = match[1] ?? match[2];
+    values.push(text == null ? null : text.replace(/\\([\s\S])/g, (_, c: string) => ({ n: "\n", t: "\t", r: "\r" })[c] ?? c));
+    separator = match[4];
+  }
+  return values;
+}
+
+function shortcodeArguments(name: keyof typeof shortcodes, node: Node): string {
+  return shortcodes[name].args.map((arg) => nunjucksString(node.attrs[arg])).join(", ");
+}
+
+function nunjucksString(value: string | null): string {
+  return value == null ? "null" : `"${value.replace(/[\\"]/g, "\\$&").replace(/\n/g, "\\n").replace(/\t/g, "\\t").replace(/\r/g, "\\r")}"`;
+}
+
 const extraAttrs = (tok: Token) => ({ extra: tok.meta?.extra ?? {} });
 const rawInline = { node: "raw_inline", getAttrs: (tok: Token) => ({ content: tok.content }) };
 const rawBlock = { node: "raw_block", getAttrs: (tok: Token) => ({ content: tok.content.replace(/\n$/, "") }) };
@@ -171,6 +234,8 @@ const parser = new MarkdownParser(schema, tokenizer, {
   raw_inline: rawInline,
   html_inline: rawInline,
   raw_block: rawBlock,
+  image_container: { node: "image_container", noCloseToken: true, getAttrs: (tok: Token) => tok.meta },
+  video_container: { block: "video_container", getAttrs: (tok: Token) => tok.meta },
   html_block: rawBlock,
 });
 
@@ -187,6 +252,14 @@ const serializer = new MarkdownSerializer(
     },
     raw_block(state, node) {
       state.text(node.attrs.content, false);
+      state.closeBlock(node);
+    },
+    image_container(state, node) {
+      state.text(`{% imageContainer ${shortcodeArguments("imageContainer", node)} %}`, false);
+      state.closeBlock(node);
+    },
+    video_container(state, node) {
+      state.text(`{% videoContainer ${shortcodeArguments("videoContainer", node)} %}\n  ${serializeHtmlInline(node)}\n{% endvideoContainer %}`, false);
       state.closeBlock(node);
     },
     raw_inline(state, node) {

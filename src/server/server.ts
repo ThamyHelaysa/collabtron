@@ -17,6 +17,10 @@ const page = `<!doctype html>
     .raw-block, .raw-inline { font-family: monospace; background: #eee; color: #555; cursor: grab; }
     .raw-block { white-space: pre-wrap; padding: .5em; }
     .ProseMirror-selectednode { outline: 2px solid #48f; }
+    .shortcode-block { margin: 1em 0; padding: .5em; border: 1px solid #ccc; border-radius: 4px; }
+    .shortcode-block fieldset { display: grid; gap: .25em; border: 0; padding: 0; margin: 0; }
+    .shortcode-block label { display: grid; font-size: .85em; color: #555; }
+    .shortcode-block figcaption { margin-top: .5em; }
   </style>
 </head>
 <body>
