@@ -14,6 +14,9 @@ const page = `<!doctype html>
   <title>collabtron</title>
   <style>
     .ProseMirror { white-space: pre-wrap; word-wrap: break-word; outline: none; min-height: 50vh; }
+    .raw-block, .raw-inline { font-family: monospace; background: #eee; color: #555; cursor: grab; }
+    .raw-block { white-space: pre-wrap; padding: .5em; }
+    .ProseMirror-selectednode { outline: 2px solid #48f; }
   </style>
 </head>
 <body>

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { EditorState, NodeSelection } from "prosemirror-state";
 import { readdirSync, readFileSync } from "node:fs";
 import MarkdownIt from "markdown-it";
 import markdownItAnchor from "markdown-it-anchor";
@@ -36,7 +37,14 @@ test("serializes in house style: ** bold, - bullets, ATX headings", () => {
 });
 
 test("refuses Markdown it cannot represent instead of dropping it", () => {
-  expect(() => parse("<div>lorem</div>\n")).toThrow();
+  expect(() => parse("| lorem |\n| - |\n| ipsum |\n")).toThrow();
+});
+
+test("keeps an unknown HTML block as a Raw Block, byte for byte", () => {
+  const markdown = "Lorem\n\n<div class=\"x\">\n  **ipsum**  &amp;\n</div>\n\nDolor\n";
+  const doc = parse(markdown);
+  expect(doc.child(1).type.name).toBe("raw_block");
+  expect(serialize(doc)).toBe(markdown);
 });
 
 test("parses HTML strikethrough as an editable mark and saves it as <s>", () => {
@@ -56,7 +64,7 @@ test("saves external links in house style, preserving escaped attributes", () =>
   expect(parse(serialize(doc)).eq(doc)).toBe(true);
   const html = '<a target="_blank" title="A &quot;quote&quot;" rel="noreferrer" href="https://example.com/">**Lorem**</a>';
   const link = parse(html).firstChild!.firstChild!.marks.find((mark) => mark.type.name === "link")!;
-  expect(link.attrs).toEqual({ href: "https://example.com/", title: 'A "quote"' });
+  expect(link.attrs).toEqual({ href: "https://example.com/", title: 'A "quote"', wrapped: false });
   expect(render(serialize(parse(html)))).toBe(render(html));
 });
 
@@ -65,10 +73,19 @@ test("keeps relative links in Markdown", () => {
     .toBe('[Lorem](/posts/lorem "Ipsum") [dolor](#sit)\n');
 });
 
-test.each(["<br/>", "</br>", "<br>", "<br />", "  \n", "\\\n"])("saves hard breaks as </br>: %j", (br) => {
+test.each([
+  ["<br/>", "Lorem</br>ipsum\n"],
+  ["</br>", "Lorem</br>ipsum\n"],
+  ["<br>", "Lorem</br>ipsum\n"],
+  ["<br />", "Lorem</br>ipsum\n"],
+  // A Markdown break renders as <br> plus the newline it ends.
+  ["  \n", "Lorem</br> ipsum\n"],
+  ["\\\n", "Lorem</br> ipsum\n"],
+])("saves hard breaks as </br>: %j", (br, saved) => {
   const doc = parse(`Lorem${br}ipsum`);
   expect(doc.firstChild!.child(1).type.name).toBe("hard_break");
-  expect(serialize(doc)).toBe("Lorem</br>ipsum\n");
+  expect(serialize(doc)).toBe(saved);
+  expect(render(saved)).toBe(render(`Lorem${br}ipsum`));
 });
 
 test("preserves consecutive and trailing hard breaks", () => {
@@ -94,8 +111,6 @@ test.each([
   "<s>one ~~two~~ three</s>",
   '<a href="https://example.com" rel="noreferrer" target="_blank">one [two](/posts/lorem) three</a>',
   'Lorem <s><a href="https://example.com">ipsum</s></a>',
-  "Lorem <br class='keep'>ipsum",
-  "Lorem <span>ipsum</span>",
 ])("refuses unsupported or unbalanced HTML instead of losing it: %s", (markdown) => {
   expect(() => parse(markdown)).toThrow();
 });
@@ -129,4 +144,97 @@ test("preserves literal text and formatting after deleting an HTML block's leadi
   expect(reopened.textContent).toBe("**literal** code");
   expect(reopened.firstChild!.firstChild!.marks).toEqual([]);
   expect(reopened.firstChild!.lastChild!.marks.map((mark) => mark.type.name)).toEqual(["code"]);
+});
+
+test.each([
+  '{% raw %}\n# {{ lorem }}\n\n*ipsum*\n{% endraw %}',
+  '{% sectionBlock "Lorem", "Ipsum" %}\n\n## Dolor\n\n{% sectionBlock "Nested" %}\nsit\n{% endsectionBlock %}\n\n{%- endsectionBlock -%}',
+  '{% blogSectionBlock "Lorem" %}\nipsum\n{% endblogSectionBlock %}\nstill raw until a blank line',
+  '{% imageContainer\n  "lorem.png",\n  "Ipsum _dolor_" %}',
+  '{% unknownThing a_b %}',
+])("keeps an unknown block shortcode as a Raw Block, byte for byte: %j", (shortcode) => {
+  const markdown = `Lorem\n\n${shortcode}\n\nDolor\n`;
+  const doc = parse(markdown);
+  expect(doc.childCount).toBe(3);
+  expect(doc.child(1).type.name).toBe("raw_block");
+  expect(serialize(doc)).toBe(markdown);
+});
+
+test.each([
+  "```\n{% raw %}\n{{ lorem_ipsum }}\n```\n",
+  "    {% raw %}\n    {{ lorem }}\n",
+])("leaves Nunjucks inside code blocks as literal code: %j", (markdown) => {
+  const doc = parse(markdown);
+  expect(doc.firstChild!.type.name).toBe("code_block");
+  expect(doc.textContent).toContain("{% raw %}\n{{ lorem");
+  expect(render(serialize(doc))).toBe(render(markdown));
+});
+
+test.each([
+  ["Lorem {{ ipsum_dolor | sit }} amet_", ["{{ ipsum_dolor | sit }}"]],
+  ['Lorem {% imageContainer "a_b.png" %} *ipsum*', ['{% imageContainer "a_b.png" %}']],
+  ["{# lorem_ipsum #} dolor", ["{# lorem_ipsum #}"]],
+  ['Lorem <span class="x">ipsum</span>', ['<span class="x">', "</span>"]],
+  ["Lorem <br class='keep'>ipsum", ["<br class='keep'>"]],
+  ["Lorem\n{% raw %}ipsum{% endraw %}", ["{% raw %}", "{% endraw %}"]],
+  ['<br/>\nLorem {{ "ipsum" }} <span>&amp;</span>\n', ['{{ "ipsum" }}', "<span>", "</span>"]],
+])("keeps unknown Nunjucks and inline HTML as Raw Inline atoms: %j", (markdown, raws) => {
+  const doc = parse(markdown);
+  const found: string[] = [];
+  doc.descendants((node) => { if (node.type.name === "raw_inline") found.push(node.attrs.content); });
+  expect(found).toEqual(raws);
+  for (const raw of raws) expect(serialize(doc)).toContain(raw);
+  expect(render(serialize(doc))).toBe(render(markdown));
+});
+
+test("leaves Nunjucks inside inline code as literal code", () => {
+  const doc = parse("Lorem `{{ ipsum }}`");
+  expect(doc.firstChild!.lastChild!.text).toBe("{{ ipsum }}");
+  expect(doc.firstChild!.lastChild!.marks.map((mark) => mark.type.name)).toEqual(["code"]);
+});
+
+test("selects, moves and deletes a Raw Block and a Raw Inline only as a whole", () => {
+  const doc = parse("Lorem {{ ipsum }} dolor\n\n<div>\nsit\n</div>\n");
+  const inlinePos = 1 + "Lorem ".length;
+  const blockPos = doc.firstChild!.nodeSize;
+  const inline = NodeSelection.create(doc, inlinePos);
+  const block = NodeSelection.create(doc, blockPos);
+  expect(inline.node.type.name).toBe("raw_inline");
+  expect(block.node.type.name).toBe("raw_block");
+  expect(inline.node.isAtom && block.node.isAtom).toBe(true);
+
+  const state = EditorState.create({ doc });
+  expect(serialize(state.apply(state.tr.setSelection(inline).deleteSelection()).doc)).toBe("Lorem  dolor\n\n<div>\nsit\n</div>\n");
+  expect(serialize(state.apply(state.tr.setSelection(block).deleteSelection()).doc)).toBe("Lorem {{ ipsum }} dolor\n");
+  const moved = state.tr.delete(blockPos, blockPos + block.node.nodeSize).insert(0, block.node);
+  expect(serialize(moved.doc)).toBe("<div>\nsit\n</div>\n\nLorem {{ ipsum }} dolor\n");
+});
+
+test("keeps Raw Inline atoms in headings", () => {
+  const markdown = "Lorem\n\n## Ipsum {{ dolor }} <span>sit</span>\n\nAmet\n";
+  const doc = parse(markdown);
+  expect(doc.child(1).type.name).toBe("heading");
+  expect(serialize(doc)).toBe(markdown);
+});
+
+test("refuses Nunjucks or HTML in image alt text instead of dropping it", () => {
+  expect(() => parse("![Lorem {{ ipsum }}](/dolor.png)")).toThrow();
+  expect(() => parse("![Lorem <span>ipsum</span>](/dolor.png)")).toThrow();
+});
+
+const external = '<a href="https://example.com/" rel="noreferrer" target="_blank">';
+test.each([
+  "**[Lorem](/ipsum)**",
+  "[**Lorem**](/ipsum)",
+  "**[Lorem](/ipsum) dolor**",
+  "**Lorem [ipsum](/dolor)**",
+  "[**Lorem** ipsum](/dolor)",
+  "***[Lorem](/ipsum)***",
+  "<s>[Lorem](/ipsum) dolor</s>",
+  `**${external}Lorem</a>**`,
+  `${external}**Lorem**</a>`,
+  `</br>\n<strong>${external}Lorem</a></strong>`,
+  `</br>\n${external}<strong>Lorem</strong></a>`,
+])("keeps marks inside or outside a link as written: %j", (markdown) => {
+  expect(serialize(parse(markdown))).toBe(`${markdown}\n`);
 });
