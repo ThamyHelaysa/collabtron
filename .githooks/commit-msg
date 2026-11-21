@@ -1,3 +1,8 @@
 #!/bin/sh
 # Ignore git's comment lines (the verbose diff can contain anything).
-grep -v '^#' "$1" | sh scripts/check-attribution.sh
+grep -v '^#' "$1" | sh scripts/check-attribution.sh || exit 1
+subject=$(grep -v '^#' "$1" | head -n 1)
+if ! printf '%s\n' "$subject" | grep -qE '^((feat|fix|chore|refactor|docs|style|test|perf|build|ci|revert)(\([a-z0-9-]+\))?!?: .+|(Merge|Revert|fixup!|squash!) )'; then
+  echo "Not a conventional commit: '$subject' (see AGENTS.md, Git)." >&2
+  exit 1
+fi

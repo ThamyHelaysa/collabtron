@@ -12,6 +12,34 @@
 - **Work is done when CI is green**: after a push, run `gh pr checks <n> --watch`
   and fix what fails before reporting.
 
+## Run and check
+
+pnpm via corepack (`packageManager` in `package.json`, ADR 0002). Never `npm` or `npx`.
+
+```bash
+corepack pnpm install
+corepack pnpm dev <post-id>   # needs .env, copy from .env.example
+corepack pnpm typecheck
+corepack pnpm test
+```
+
+Before reporting: run `typecheck` and `test`, say which commands you could not run and why, list risks and what still needs a manual check.
+
+## Don'ts
+
+- No `--no-frozen-lockfile`, no lockfile edits by hand.
+- No new dependency without a stated reason. Every import must be declared in `package.json` (pnpm is strict).
+- No refactors outside the task's scope.
+- Never edit `dist/` (build output).
+- Never commit real paths from `SITE_DIR`/`POSTS_DIR` or `.env` values.
+- Don't contradict an ADR silently; say so and why.
+
+## Git
+
+- Branch off `main`, one branch per issue (`issue-<n>-<slug>`). Never push to `main`.
+- Conventional commits: `<type>(<scope>)?: <description>`, enforced by `.githooks/commit-msg`.
+- PR body says `Closes #<n>`.
+
 ## Agent skills
 
 ### Issue tracker
