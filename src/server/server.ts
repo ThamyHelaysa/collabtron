@@ -65,16 +65,17 @@ export async function startServer({ host, port, catalog, heartbeatMs = 30_000 }:
   // New on every start: tells clients their Versions belong to an Authority that is gone.
   const instance = randomUUID();
   // One Authority per open Post, loaded from the Post file when its first Collaborator joins.
-  const sessions = new Map<string, Promise<EditingSession>>();
+  // Joining never waits between finding a loaded session here and entering it, so an ended one is never entered.
+  const editingSessions = new Map<string, Promise<EditingSession>>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxBody });
 
-  function sessionFor(post: Post) {
-    let session = sessions.get(post.id);
+  function editingSessionFor(post: Post) {
+    let session = editingSessions.get(post.id);
     if (!session) {
       session = readPost(post).then((markdown) => ({ authority: createAuthority(parse(markdown)), sockets: new Set<WebSocket>() }));
-      sessions.set(post.id, session);
+      editingSessions.set(post.id, session);
       // A Post that failed to open is retried by the next Collaborator.
-      session.catch(() => sessions.delete(post.id));
+      session.catch(() => editingSessions.delete(post.id));
     }
     return session;
   }
@@ -82,7 +83,7 @@ export async function startServer({ host, port, catalog, heartbeatMs = 30_000 }:
   async function join(socket: WebSocket, post: Post) {
     let session: EditingSession;
     try {
-      session = await sessionFor(post);
+      session = await editingSessionFor(post);
     } catch (err) {
       console.error(err);
       socket.close(1011, "it has Markdown the editor cannot keep yet");
@@ -91,19 +92,23 @@ export async function startServer({ host, port, catalog, heartbeatMs = 30_000 }:
     if (socket.readyState !== socket.OPEN) return;
     const { authority, sockets } = session;
     sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
+    socket.on("close", () => {
+      sockets.delete(socket);
+      // The Editing Session ends with its last Collaborator: the next one reads the Post file again.
+      if (!sockets.size) editingSessions.delete(post.id);
+    });
     socket.send(JSON.stringify({ type: "init", instance, version: authority.version, doc: authority.doc.toJSON() }));
 
     socket.on("message", (data) => {
       try {
         const message = JSON.parse(data.toString());
-        if (message?.type !== "steps" || !Array.isArray(message.steps) || !["string", "number"].includes(typeof message.clientID)) throw new Error("not a steps message");
+        if (message?.type !== "steps" || !Array.isArray(message.steps) || !message.steps.length || !["string", "number"].includes(typeof message.clientID)) throw new Error("not a steps message");
         // Validates the Version too: throws before any Step is accepted.
         const missing = authority.stepsSince(message.version);
         if (authority.receive(message.version, message.steps, message.clientID)) {
           const accepted = JSON.stringify(authority.stepsSince(message.version));
           // The sender too: that is how it learns its Steps are confirmed.
-          for (const each of sockets) each.send(accepted);
+          for (const collaborator of sockets) collaborator.send(accepted);
         } else {
           socket.send(JSON.stringify(missing));
         }

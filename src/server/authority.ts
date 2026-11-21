@@ -37,6 +37,8 @@ export function createAuthority(doc: Node) {
         return { step, clientID };
       });
       next.check();
+      // Clients refuse a transaction that removes the Front Matter Block, so one must never become official.
+      if (doc.firstChild?.type === schema.nodes.front_matter && next.firstChild?.type !== schema.nodes.front_matter) throw new Error("Steps remove the Front Matter Block");
       doc = next;
       log.push(...accepted);
       return true;

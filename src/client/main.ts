@@ -68,7 +68,7 @@ const tools: [string, Command][] = [
 ];
 
 let view: EditorView | undefined;
-const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${encodeURIComponent(postId)}`);
+const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(postId)}`);
 const push = syncWithAuthority(socket, (doc, version) => {
   view = new EditorView(document.querySelector("#editor"), {
     nodeViews: shortcodeViews,

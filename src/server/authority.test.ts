@@ -59,7 +59,7 @@ async function raw(postId?: string) {
 }
 
 // A headless Collaborator: real prosemirror-collab state, no DOM.
-async function join_() {
+async function collaborator() {
   let editor: Editor | undefined;
   const push = syncWithAuthority(open(), (doc, version) => {
     editor = {
@@ -89,7 +89,7 @@ async function join_() {
 const converged = (clients: { markdown: string }[], markdown: string) => until(() => clients.every((client) => client.markdown === markdown));
 
 test("typing by one Collaborator appears for the other", async () => {
-  const [a, b] = [await join_(), await join_()];
+  const [a, b] = [await collaborator(), await collaborator()];
 
   a.type(" dolor");
 
@@ -97,7 +97,7 @@ test("typing by one Collaborator appears for the other", async () => {
 });
 
 test("concurrent edits in the same paragraph converge without loss", async () => {
-  const clients = [await join_(), await join_(), await join_()];
+  const clients = [await collaborator(), await collaborator(), await collaborator()];
 
   // All typed before any answer from the Authority: two of the three are based on a stale Version.
   clients[0].type("A", "start");
@@ -111,13 +111,13 @@ test("concurrent edits in the same paragraph converge without loss", async () =>
   expect(paragraph).toMatch(/^aAIpsum[BbC]{3}$/);
   expect(paragraph).toContain("Bb");
   // A late Collaborator gets the converged document, not the Post file.
-  expect((await join_()).markdown).toBe(clients[0].markdown);
+  expect((await collaborator()).markdown).toBe(clients[0].markdown);
 });
 
 const insert = (text: string) => ({ stepType: "replace", from: 15, to: 15, slice: { content: [{ type: "text", text }] } });
 
 test("Steps on a stale Version are rejected with the missing Steps", async () => {
-  const [a, b, late] = [await raw(), await raw(), await join_()];
+  const [a, b, late] = [await raw(), await raw(), await collaborator()];
   expect(a.messages).toMatchObject([{ type: "init", version: 0 }]);
 
   a.send({ type: "steps", version: 0, steps: [insert("x")], clientID: "a" });
@@ -136,7 +136,10 @@ test("Steps on a stale Version are rejected with the missing Steps", async () =>
 test("Steps that do not apply close the socket and change nothing", async () => {
   for (const message of [
     { type: "steps", version: 0, steps: [insert("x"), { ...insert("y"), from: 999, to: 999 }], clientID: "a" },
-    { type: "steps", version: 7, steps: [], clientID: "a" },
+    { type: "steps", version: 7, steps: [insert("x")], clientID: "a" },
+    { type: "steps", version: 0, steps: [], clientID: "a" },
+    // Valid for the schema, but it deletes the Front Matter Block.
+    { type: "steps", version: 0, steps: [{ stepType: "replace", from: 0, to: 14 }], clientID: "a" },
     { type: "steps", version: 0, steps: [insert("x")] },
     "nonsense",
   ]) {
@@ -146,11 +149,32 @@ test("Steps that do not apply close the socket and change nothing", async () => 
   }
 
   expect((await raw()).messages).toMatchObject([{ type: "init", version: 0 }]);
-  expect((await join_()).markdown).toBe("---\ntitle: Lorem\n---\n\nIpsum\n");
+  expect((await collaborator()).markdown).toBe("---\ntitle: Lorem\n---\n\nIpsum\n");
+});
+
+test("a Post nobody has open is read from the Post file again", async () => {
+  const first = await collaborator();
+  first.type(" unsaved");
+  await converged([first, await collaborator()], "---\ntitle: Lorem\n---\n\nIpsum unsaved\n");
+  const observer = await raw();
+  expect(observer.messages).toMatchObject([{ version: 1 }]);
+
+  for (const socket of sockets.splice(0)) socket.close();
+  await writeFile(join(postsDir, "lorem-ipsum", "index.md"), "Changed on disk\n");
+
+  // The closes may still be on their way to the Server: until then a newcomer joins the old Editing Session.
+  await expect
+    .poll(async () => {
+      const newcomer = await raw();
+      newcomer.socket.close();
+      return newcomer.messages[0].version;
+    })
+    .toBe(0);
+  expect((await collaborator()).markdown).toBe("Changed on disk\n");
 });
 
 test("undo reverts only the local Collaborator's Steps", async () => {
-  const [a, b] = [await join_(), await join_()];
+  const [a, b] = [await collaborator(), await collaborator()];
   a.type(" mine");
   await converged([a, b], "---\ntitle: Lorem\n---\n\nIpsum mine\n");
   b.type("Theirs ", "start");

@@ -14,12 +14,14 @@ export function syncWithAuthority(socket: WebSocket, open: (doc: Node, version: 
   let editor: Editor | undefined;
   // One batch at a time: the Authority answers every batch, with our Steps accepted or with the ones we missed.
   let awaitingAnswer = false;
+  let sentAs: unknown;
 
   const push = () => {
     if (!editor || awaitingAnswer || socket.readyState !== WebSocket.OPEN) return;
     const sendable = sendableSteps(editor.state);
     if (!sendable) return;
     awaitingAnswer = true;
+    sentAs = sendable.clientID;
     socket.send(JSON.stringify({ type: "steps", version: sendable.version, steps: sendable.steps.map((step) => step.toJSON()), clientID: sendable.clientID }));
   };
 
@@ -28,12 +30,14 @@ export function syncWithAuthority(socket: WebSocket, open: (doc: Node, version: 
     if (message.type === "init") {
       editor = open(schema.nodeFromJSON(message.doc), message.version);
     } else if (message.type === "steps" && editor) {
-      // A rejection repeats Steps the broadcast already delivered: skip those.
       const known = getVersion(editor.state) - message.version;
-      awaitingAnswer = false;
-      if (known >= 0 && known < message.steps.length) {
+      const isNews = known >= 0 && known < message.steps.length;
+      // The answer to our batch is our own Steps accepted, or a rejection. A rejection brings nothing new:
+      // the Steps we missed were broadcast when accepted, before the Authority got to our batch.
+      if (!isNews || message.clientIDs.includes(sentAs)) awaitingAnswer = false;
+      if (isNews) {
         const steps = message.steps.slice(known).map((json: unknown) => Step.fromJSON(schema, json));
-        // Rebases our unconfirmed Steps over the ones we missed.
+        // Confirms our Steps among them and rebases our unconfirmed ones over the rest.
         editor.dispatch(receiveTransaction(editor.state, steps, message.clientIDs.slice(known)));
       }
       push();
