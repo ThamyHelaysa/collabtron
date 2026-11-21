@@ -390,3 +390,27 @@ test.each([
   expect(doc.firstChild!.type.name).toBe("raw_block");
   expect(serialize(doc)).toBe(`${markdown}\n`);
 });
+
+const contexts = {
+  paragraph: "Lorem\n",
+  heading: "## Lorem\n",
+  "callout's HTML lines": '<blockquote class="error-block block">\nLorem\n</blockquote>\n',
+  "callout's Markdown": '<blockquote class="warning-block block">\n\nLorem\n\n</blockquote>\n',
+  "details summary": "<details>\n  <summary>Lorem</summary>\n\nIpsum\n\n</details>\n",
+  "details body": "<details>\n  <summary>Ipsum</summary>\n\nLorem\n\n</details>\n",
+  "video caption": '{% videoContainer "a.mp4", null, null %}\n  Lorem\n{% endvideoContainer %}\n',
+};
+const typed = ["</blockquote>", "</details>", "<b>c</b>", "&lt;", "&#123;", "{{ x }}", "{% y %}", "{# z #}", "{{{ w }}}", "a < b { c"];
+
+describe.each(Object.entries(contexts))("typed text in a %s saves as literal text", (_, markdown) => {
+  test.each(typed)("%j", (text) => {
+    const doc = parse(markdown);
+    let at = -1;
+    doc.descendants((node, pos) => { if (node.text === "Lorem") at = pos; });
+    const edited = EditorState.create({ doc }).tr.insertText(`${text} Lorem`, at, at + 5).doc;
+    const saved = serialize(edited);
+    // What the site shows: markdown-it reads it back as the same text, and Nunjucks finds no tag in it.
+    expect(parse(saved).toJSON()).toEqual(edited.toJSON());
+    expect(saved.replace(/^\{% (end)?videoContainer.*$/gm, "")).not.toMatch(/\{[{%#]/);
+  });
+});

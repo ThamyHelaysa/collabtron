@@ -21,7 +21,7 @@ The Post's YAML front matter, shown as one raw text block at the top of the docu
 _Avoid_: metadata, header
 
 **Shortcode Block**:
-A block the editor understands beyond plain Markdown (a known Nunjucks shortcode or a known house-style HTML block), shown as a card with editable fields.
+A block the editor understands beyond plain Markdown (a known Nunjucks shortcode or a known house-style HTML block), shown as a card with editable fields. Collaborators create them only from the toolbar; text they type is always literal and never becomes one.
 _Avoid_: custom node, widget, embed
 
 **Raw Block**:

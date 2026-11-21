@@ -346,6 +346,11 @@ const serializer = new MarkdownSerializer(
     raw_inline(state, node) {
       state.text(node.attrs.content, false);
     },
+    text(state, node, parent, index) {
+      // Text equal to its href may save as an autolink, where entities stay literal.
+      const url = node.marks.some((mark) => mark.type.name === "link" && mark.attrs.href === node.text);
+      defaultMarkdownSerializer.nodes.text(state, url ? node : schema.text(literalText(node.text!), node.marks), parent, index);
+    },
     hard_break(state) {
       state.write("</br>");
     },
@@ -453,6 +458,13 @@ function htmlWhenExtra(name: "em" | "strong" | "code"): MarkSerializerSpec {
   };
 }
 
+// Typed text is literal (ADR 0003): an entity wherever it would open HTML, an entity or a Nunjucks tag.
+// markdown-it decodes the entity, so the site shows the text as typed, and Nunjucks never sees a tag.
+const nunjucksOpen = /\{(?=[{%#])/g;
+function literalText(text: string): string {
+  return text.replace(/&(?=#?\w+;)/g, "&amp;").replace(/<(?=[A-Za-z/!?])/g, "&lt;").replace(nunjucksOpen, "&#123;");
+}
+
 function htmlAttributes(attrs: Attrs): string {
   return Object.entries(attrs).filter(([, value]) => value != null)
     .map(([name, value]) => ` ${name}="${tokenizer.utils.escapeHtml(String(value))}"`).join("");
@@ -472,7 +484,7 @@ function serializeHtmlInline(paragraph: Node): string {
       html += `<${spec[0]}${htmlAttributes(mark.type.name === "link" ? linkAttributes(mark.attrs) : mark.attrs.extra)}>`;
       active.push({ mark, close: `</${spec[0]}>` });
     }
-    if (node.isText) html += tokenizer.utils.escapeHtml(node.text!);
+    if (node.isText) html += tokenizer.utils.escapeHtml(node.text!).replace(nunjucksOpen, "&#123;");
     else if (node.type.name === "hard_break") html += "</br>";
     else if (node.type.name === "raw_inline") html += node.attrs.content;
     else if (node.type.name === "image") html += `<img${htmlAttributes(node.attrs)}>`;
