@@ -346,6 +346,11 @@ const serializer = new MarkdownSerializer(
     raw_inline(state, node) {
       state.text(node.attrs.content, false);
     },
+    text(state, node, parent, index) {
+      // shortcut: autolink text stays raw (entities are literal there), so typed Nunjucks in it reaches the site; upgrade if a Post needs it.
+      const autolink = savesAsAutolink(parent, index);
+      defaultMarkdownSerializer.nodes.text(state, autolink ? node : schema.text(literalText(node.text!), node.marks), parent, index);
+    },
     hard_break(state) {
       state.write("</br>");
     },
@@ -453,6 +458,25 @@ function htmlWhenExtra(name: "em" | "strong" | "code"): MarkSerializerSpec {
   };
 }
 
+// ADR 0003: markdown-it decodes these entities, so the site shows typed text as typed and Nunjucks never sees a tag.
+// shortcut: code, image alt and Shortcode Block fields stay raw, so typed Nunjucks there reaches the site; upgrade if a Post needs it.
+function literalText(text: string): string {
+  return literalNunjucks(text.replace(/&(?=#?\w+;)/g, "&amp;").replace(/<(?=[A-Za-z/!?])/g, "&lt;"));
+}
+
+// A trailing { too: the next node may be a Raw Inline starting with {.
+function literalNunjucks(text: string): string {
+  return text.replace(/\{(?=[{%#]|$)/g, "&#123;");
+}
+
+// What prosemirror-markdown writes as <href>; HTML links never are.
+function savesAsAutolink(parent: Node, index: number): boolean {
+  const node = parent.child(index);
+  const link = node.marks.at(-1);
+  if (link?.type.name !== "link" || isHtmlLink(link) || link.attrs.title || !/^\w+:/.test(link.attrs.href)) return false;
+  return node.text === link.attrs.href && (index === parent.childCount - 1 || !link.isInSet(parent.child(index + 1).marks));
+}
+
 function htmlAttributes(attrs: Attrs): string {
   return Object.entries(attrs).filter(([, value]) => value != null)
     .map(([name, value]) => ` ${name}="${tokenizer.utils.escapeHtml(String(value))}"`).join("");
@@ -472,7 +496,7 @@ function serializeHtmlInline(paragraph: Node): string {
       html += `<${spec[0]}${htmlAttributes(mark.type.name === "link" ? linkAttributes(mark.attrs) : mark.attrs.extra)}>`;
       active.push({ mark, close: `</${spec[0]}>` });
     }
-    if (node.isText) html += tokenizer.utils.escapeHtml(node.text!);
+    if (node.isText) html += literalNunjucks(tokenizer.utils.escapeHtml(node.text!));
     else if (node.type.name === "hard_break") html += "</br>";
     else if (node.type.name === "raw_inline") html += node.attrs.content;
     else if (node.type.name === "image") html += `<img${htmlAttributes(node.attrs)}>`;

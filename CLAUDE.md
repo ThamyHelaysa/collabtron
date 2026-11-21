@@ -15,3 +15,4 @@ Real-time collaborative editor for the Posts of an Eleventy site. Workflow, rule
 - `pnpm dev` takes exactly one Post ID; the catalog only knows that Post.
 - No auth yet: dev mode binds loopback only, and that check in `main.ts` must stay.
 - Round-trip is faithful when the site renders the same HTML, not when bytes match.
+- Typed text is literal: the serializer writes `&lt;`, `&amp;`, `&#123;` where text would open HTML or Nunjucks; Shortcode Blocks come only from the toolbar. Code, autolinks, image alt and fields are exceptions ([ADR 0003](docs/adr/0003-typed-text-is-literal.md)).
