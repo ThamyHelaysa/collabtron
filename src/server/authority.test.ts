@@ -311,13 +311,15 @@ test("the Server saves what is pending before it closes", async () => {
 
 test("a save that failed is tried again when the Editing Session ends", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
+  const file = join(postsDir, "lorem-ipsum", "index.md");
   const [a, watcher] = [await collaborator(), await raw()];
-  // The new Post file is written beside the old one, so a folder that refuses new files makes the save fail.
-  await chmod(join(postsDir, "lorem-ipsum"), 0o555);
+  // Made read-only by its owner: replacing it by rename would get past that.
+  await chmod(file, 0o444);
 
   a.type(" dolor");
   await until(() => watcher.messages.at(-1)?.error === "The Server could not save the Post file.");
-  await chmod(join(postsDir, "lorem-ipsum"), 0o755);
+  expect(await postFile()).toBe("---\ntitle: Lorem\n---\n\nIpsum\n");
+  await chmod(file, 0o644);
   for (const socket of sockets.splice(0)) socket.close();
 
   await saved("---\ntitle: Lorem\n---\n\nIpsum dolor\n");
@@ -359,4 +361,20 @@ test("a Collaborator who leaves while the Post is still loading does not keep it
   await new Promise((resolve) => setTimeout(resolve, 100));
 
   expect((await collaborator()).markdown).toBe("Changed on disk\n");
+});
+
+test("a save whose folder cannot be synced to disk does not stop saving", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const folder = join(postsDir, "lorem-ipsum");
+  const a = await collaborator();
+  // Files can be made in it, but it cannot be opened to sync it.
+  await chmod(folder, 0o333);
+  try {
+    a.type(" dolor");
+    await saved("---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+    a.type(" amet");
+    await saved("---\ntitle: Lorem\n---\n\nIpsum dolor amet\n");
+  } finally {
+    await chmod(folder, 0o755);
+  }
 });

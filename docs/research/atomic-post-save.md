@@ -123,6 +123,8 @@ export async function writePost(post: Post, text: string, unchanged: (onDisk: st
 
 **Pick: A.** It is the only option that closes item 1 in every failure mode, and it is the same pattern as Git, write-file-atomic, Emacs precious files and VS Code's state files. On macOS Eleventy saw one `change`. Item 2 stays a narrowed, documented window. Add C only if losses from in-place writers show up.
 
+**Decided:** A + C, because VS Code saves in place. See [ADR 0006](../adr/0006-server-saves-never-over-outside-changes.md).
+
 ## Sources
 
 Code was read at these commits, and the line links above point to them:
