@@ -52,9 +52,7 @@ test("rejects Post IDs not in the Post Catalog, even ones that exist on disk", a
   for (const id of ["other-post", "..%2Fother-post", "missing"]) {
     expect((await fetch(`${base}/p/${id}`)).status).toBe(404);
     expect((await fetch(`${base}/api/posts/${id}`)).status).toBe(404);
-    expect((await fetch(`${base}/api/posts/${id}`, { method: "PUT", body: "x" })).status).toBe(404);
   }
-  expect(await readFile(join(postsDir, "other-post", "index.md"), "utf8")).toBe("other\n");
 });
 
 test("loads the whole Post file, front matter included", async () => {
@@ -64,17 +62,7 @@ test("loads the whole Post file, front matter included", async () => {
   expect(await res.text()).toBe(postFile);
 });
 
-test("saving writes the Markdown, front matter included, to the Post file", async () => {
-  const saved = "---\ntitle: Ipsum\n---\n\n# Ipsum\n\nNew text.\n";
-  const res = await fetch(`${base}/api/posts/lorem-ipsum`, { method: "PUT", body: saved });
-
-  expect(res.status).toBe(204);
-  expect(await readFile(join(postsDir, "lorem-ipsum", "index.md"), "utf8")).toBe(saved);
-});
-
-test("saving keeps multi-byte characters intact in a large Post", async () => {
-  const body = "Lorem ipsum – çãé 🙂\n\n".repeat(20_000);
-  await fetch(`${base}/api/posts/lorem-ipsum`, { method: "PUT", body });
-
-  expect(await readFile(join(postsDir, "lorem-ipsum", "index.md"), "utf8")).toBe(body);
+test("saving is the Server's alone: a tab cannot write the Post file", async () => {
+  expect((await fetch(`${base}/api/posts/lorem-ipsum`, { method: "PUT", body: "x" })).status).toBe(405);
+  expect(await readFile(join(postsDir, "lorem-ipsum", "index.md"), "utf8")).toBe(postFile);
 });
