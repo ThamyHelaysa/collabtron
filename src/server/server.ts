@@ -99,6 +99,15 @@ export async function startServer({
     return session;
   }
 
+  // The Editing Session ends with its last Collaborator, once what they typed is saved: the next one reads the Post file again.
+  // Whoever joins while it saves keeps it going; an earlier save may already have ended it and a new one taken its place.
+  function endIfEmpty(post: Post, entry: Promise<EditingSession>, { sockets, saver }: EditingSession) {
+    if (sockets.size) return;
+    void saver.flush().then(() => {
+      if (!sockets.size && editingSessions.get(post.id) === entry) editingSessions.delete(post.id);
+    });
+  }
+
   async function join(socket: WebSocket, post: Post) {
     const entry = editingSessionFor(post);
     let session: EditingSession;
@@ -109,17 +118,13 @@ export async function startServer({
       socket.close(1011, "it has Markdown the editor cannot keep yet");
       return;
     }
-    if (socket.readyState !== socket.OPEN) return;
+    // Left while the Post was loading: it may have been the only one.
+    if (socket.readyState !== socket.OPEN) return endIfEmpty(post, entry, session);
     const { authority, sockets, saver } = session;
     sockets.add(socket);
     socket.on("close", () => {
       sockets.delete(socket);
-      if (sockets.size) return;
-      // The Editing Session ends with its last Collaborator, once what they typed is saved: the next one reads the Post file again.
-      // Whoever joins while it saves keeps it going; an earlier save may already have ended it and a new one taken its place.
-      void saver.flush().then(() => {
-        if (!sockets.size && editingSessions.get(post.id) === entry) editingSessions.delete(post.id);
-      });
+      endIfEmpty(post, entry, session);
     });
     socket.send(JSON.stringify({ type: "init", instance, version: authority.version, doc: authority.doc.toJSON() }));
     // A Collaborator who joins while saving fails is told at once.

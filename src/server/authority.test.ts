@@ -1,6 +1,7 @@
 // Seam 2: the Server as a black box over WebSocket, driven by headless clients running the browser's own sync code.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AddressInfo } from "node:net";
+import { execFileSync } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -336,4 +337,26 @@ test("saving keeps the Post file's permissions and a symlink to it, and leaves n
   expect((await lstat(join(folder, "index.md"))).isSymbolicLink()).toBe(true);
   expect((await stat(target)).mode & 0o777).toBe(0o640);
   expect(await readdir(folder)).toEqual(["index.md"]);
+});
+
+test("a Collaborator who leaves while the Post is still loading does not keep its Editing Session open", async () => {
+  const file = join(postsDir, "lorem-ipsum", "index.md");
+  await rm(file);
+  // A named pipe: the Server's read of the Post file waits until the test writes into it.
+  execFileSync("mkfifo", [file]);
+  try {
+    const leaving = open();
+    await new Promise((resolve) => leaving.addEventListener("open", resolve));
+    leaving.close();
+    await until(() => leaving.readyState === WebSocket.CLOSED);
+  } finally {
+    // Always ends the Server's read, or closing the Server would wait on it.
+    await writeFile(file, "Loaded after its Collaborator left\n");
+  }
+  await rm(file);
+  await writeFile(file, "Changed on disk\n");
+  // shortcut: a fixed wait for the Server to finish that read, can fail on a very slow machine (never pass wrongly), upgrade if CI trips on it.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  expect((await collaborator()).markdown).toBe("Changed on disk\n");
 });
