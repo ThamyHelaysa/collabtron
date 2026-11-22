@@ -1,7 +1,11 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { PostCatalog } from "./post-catalog.ts";
+import { randomUUID } from "node:crypto";
+import { WebSocketServer, type WebSocket } from "ws";
+import { parse } from "../shared/markdown.ts";
+import { createAuthority, type Authority } from "./authority.ts";
+import type { Post, PostCatalog } from "./post-catalog.ts";
 import { readPost, writePost } from "./post-file.ts";
 
 const clientDir = new URL("../../dist/client/", import.meta.url);
@@ -55,7 +59,71 @@ async function readBody(req: IncomingMessage) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export async function startServer({ host, port, catalog }: { host: string; port: number; catalog: PostCatalog }) {
+type EditingSession = { authority: Authority; sockets: Set<WebSocket> };
+
+export async function startServer({ host, port, catalog, heartbeatMs = 30_000 }: { host: string; port: number; catalog: PostCatalog; heartbeatMs?: number }) {
+  // New on every start: tells clients their Versions belong to an Authority that is gone.
+  const instance = randomUUID();
+  // One Authority per open Post, loaded from the Post file when its first Collaborator joins.
+  // Joining never waits between finding a loaded session here and entering it, so an ended one is never entered.
+  const editingSessions = new Map<string, Promise<EditingSession>>();
+  const wss = new WebSocketServer({ noServer: true, maxPayload: maxBody });
+
+  function editingSessionFor(post: Post) {
+    let session = editingSessions.get(post.id);
+    if (!session) {
+      session = readPost(post).then((markdown) => ({ authority: createAuthority(parse(markdown)), sockets: new Set<WebSocket>() }));
+      editingSessions.set(post.id, session);
+      // A Post that failed to open is retried by the next Collaborator.
+      session.catch(() => editingSessions.delete(post.id));
+    }
+    return session;
+  }
+
+  async function join(socket: WebSocket, post: Post) {
+    let session: EditingSession;
+    try {
+      session = await editingSessionFor(post);
+    } catch (err) {
+      console.error(err);
+      socket.close(1011, "it has Markdown the editor cannot keep yet");
+      return;
+    }
+    if (socket.readyState !== socket.OPEN) return;
+    const { authority, sockets } = session;
+    sockets.add(socket);
+    socket.on("close", () => {
+      sockets.delete(socket);
+      // The Editing Session ends with its last Collaborator: the next one reads the Post file again.
+      if (!sockets.size) editingSessions.delete(post.id);
+    });
+    socket.send(JSON.stringify({ type: "init", instance, version: authority.version, doc: authority.doc.toJSON() }));
+
+    socket.on("message", (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        if (message?.type !== "steps" || !Array.isArray(message.steps) || !message.steps.length || !["string", "number"].includes(typeof message.clientID)) throw new Error("not a steps message");
+        // Validates the Version too: throws before any Step is accepted.
+        const missing = authority.stepsSince(message.version);
+        if (authority.receive(message.version, message.steps, message.clientID)) {
+          const accepted = JSON.stringify(authority.stepsSince(message.version));
+          // The sender too: that is how it learns its Steps are confirmed.
+          for (const collaborator of sockets) collaborator.send(accepted);
+        } else {
+          socket.send(JSON.stringify(missing));
+        }
+      } catch (err) {
+        console.error(err);
+        socket.close(1008, "invalid message");
+      }
+    });
+  }
+
+  // Keeps a proxy in front of the Server from dropping idle connections.
+  const heartbeat = setInterval(() => {
+    for (const socket of wss.clients) if (socket.readyState === socket.OPEN) socket.send('{"type":"heartbeat"}');
+  }, heartbeatMs);
+
   const server = createServer((req, res) => {
     handle(req, res).catch((err) => {
       console.error(err);
@@ -103,12 +171,27 @@ export async function startServer({ host, port, catalog }: { host: string; port:
     res.writeHead(404).end();
   }
 
+  server.on("upgrade", (req, socket, head) => {
+    const post = catalog.get(req.url?.match(/^\/ws\/([^/?#]+)$/)?.[1] ?? "");
+    // Browsers do not stop another site's page from opening a WebSocket here; with no auth yet, the Origin check does.
+    const origin = req.headers.origin;
+    if (!post || (origin !== undefined && origin !== `http://${req.headers.host}`)) {
+      socket.end(`HTTP/1.1 ${post ? "403 Forbidden" : "404 Not Found"}\r\n\r\n`);
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => void join(ws, post));
+  });
+
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, host, resolve);
   });
   return {
     address: () => server.address(),
-    close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
+    close: () => {
+      clearInterval(heartbeat);
+      for (const socket of wss.clients) socket.terminate();
+      return new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    },
   };
 }

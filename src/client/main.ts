@@ -1,11 +1,13 @@
+import { collab } from "prosemirror-collab";
 import { baseKeymap, setBlockType, toggleMark } from "prosemirror-commands";
 import { history, redo, undo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { wrapInList } from "prosemirror-schema-list";
 import { EditorState, Plugin, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
-import { frontMatterError, parse, schema, serialize } from "../shared/markdown.ts";
+import { frontMatterError, schema, serialize } from "../shared/markdown.ts";
 import { keepFrontMatter } from "./front-matter.ts";
+import { syncWithAuthority } from "./sync.ts";
 import { exitCaption, insertDetails, insertImageContainer, insertVideoContainer, setQuoteVariant, shortcodeViews } from "./shortcode-blocks.ts";
 
 const postId = decodeURIComponent(location.pathname.split("/")[2]);
@@ -65,31 +67,33 @@ const tools: [string, Command][] = [
   ["Save", save],
 ];
 
-const res = await fetch(api);
-if (!res.ok) {
-  status.textContent = `Could not load Post (${res.status})`;
-  throw new Error(status.textContent);
-}
-let doc;
-try {
-  doc = parse(await res.text());
-} catch (err) {
-  status.textContent = "This Post has Markdown the editor cannot keep yet (unsupported HTML, tables or front matter); not opened.";
-  throw err;
-}
-
-const view = new EditorView(document.querySelector("#editor"), {
-  nodeViews: shortcodeViews,
-  state: EditorState.create({
-    doc,
-    plugins: [
-      history(),
-      yamlCheck,
-      keepFrontMatter,
-      keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": save, Enter: exitCaption }),
-      keymap(baseKeymap),
-    ],
-  }),
+let view: EditorView | undefined;
+const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(postId)}`);
+const push = syncWithAuthority(socket, (doc, version) => {
+  view = new EditorView(document.querySelector("#editor"), {
+    nodeViews: shortcodeViews,
+    dispatchTransaction(tr) {
+      view!.updateState(view!.state.apply(tr));
+      push();
+    },
+    state: EditorState.create({
+      doc,
+      plugins: [
+        // With collab, undo reverts only this Collaborator's Steps.
+        history(),
+        collab({ version }),
+        yamlCheck,
+        keepFrontMatter,
+        keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": save, Enter: exitCaption }),
+        keymap(baseKeymap),
+      ],
+    }),
+  });
+  return view;
+});
+// No reconnect yet: after this, edits stay in this tab only.
+socket.addEventListener("close", (event) => {
+  status.textContent = view ? "Disconnected: reload to keep editing together" : `Could not open Post${event.reason ? `: ${event.reason}` : ""}`;
 });
 
 const toolbar = document.querySelector("#toolbar")!;
@@ -99,6 +103,7 @@ for (const [label, command] of tools) {
   button.textContent = label;
   button.onmousedown = (e) => e.preventDefault(); // keep the editor's selection
   button.onclick = () => {
+    if (!view) return;
     command(view.state, view.dispatch, view);
     view.focus();
   };
