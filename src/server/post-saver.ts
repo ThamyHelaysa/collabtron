@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Post } from "./post-catalog.ts";
-import { readPost, writePost } from "./post-file.ts";
+import { writePost } from "./post-file.ts";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -36,14 +36,12 @@ export function createPostSaver({
     unsavedSince = undefined;
     try {
       const text = markdown();
-      // shortcut: a write landing between this check and ours is lost, upgrade to a file lock if that window ever matters.
-      if (hash(await readPost(post)) !== writtenHash) {
-        if (error !== changedOutside) console.warn(`${post.file} changed outside the editor: not saving Post ${post.id} over it`);
-        error = changedOutside;
-      } else {
-        await writePost(post, text);
+      if (await writePost(post, text, (onDisk) => hash(onDisk) === writtenHash)) {
         writtenHash = hash(text);
         error = undefined;
+      } else {
+        if (error !== changedOutside) console.warn(`${post.file} changed outside the editor: not saving Post ${post.id} over it`);
+        error = changedOutside;
       }
     } catch (err) {
       console.error(err);

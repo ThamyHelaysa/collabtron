@@ -100,7 +100,8 @@ async function check() {
     for (const id of ids) {
       const post = catalog.get(id)!;
       try {
-        await writePost(post, serialize(parse(await readPost(post))));
+        const markdown = await readPost(post);
+        if (!(await writePost(post, serialize(parse(markdown)), (onDisk) => onDisk === markdown))) throw new Error("changed while saving");
       } catch {
         console.error(`Round-trip failed: ${post.id}`);
         failures++;

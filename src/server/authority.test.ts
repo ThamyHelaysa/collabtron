@@ -1,7 +1,7 @@
 // Seam 2: the Server as a black box over WebSocket, driven by headless clients running the browser's own sync code.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AddressInfo } from "node:net";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { collab } from "prosemirror-collab";
@@ -161,7 +161,7 @@ test("a Post nobody has open is read from the Post file again", async () => {
   await converged([first, await collaborator()], "---\ntitle: Lorem\n---\n\nIpsum saved\n");
   await saved("---\ntitle: Lorem\n---\n\nIpsum saved\n");
   const observer = await raw();
-  expect(observer.messages).toMatchObject([{ version: 1 }]);
+  expect(observer.messages[0]).toMatchObject({ type: "init", version: 1 });
 
   for (const socket of sockets.splice(0)) socket.close();
   await writeFile(join(postsDir, "lorem-ipsum", "index.md"), "Changed on disk\n");
@@ -274,6 +274,7 @@ test("the Server refuses to save over a change made outside the editor, and warn
   await until(() => watcher.messages.at(-1)?.type === "save" && !!watcher.messages.at(-1).error);
   expect(watcher.messages.filter((message) => message.type === "save")).toEqual([{ type: "save" }, refused]);
   expect(await postFile()).toBe("Changed outside\n");
+  expect(await readdir(join(postsDir, "lorem-ipsum"))).toEqual(["index.md"]);
   expect(warn).toHaveBeenCalledWith(expect.stringContaining(join(postsDir, "lorem-ipsum", "index.md")));
   // A Collaborator who joins later is warned too.
   const late = await raw();
@@ -309,14 +310,30 @@ test("the Server saves what is pending before it closes", async () => {
 
 test("a save that failed is tried again when the Editing Session ends", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
-  const file = join(postsDir, "lorem-ipsum", "index.md");
   const [a, watcher] = [await collaborator(), await raw()];
-  await chmod(file, 0o444);
+  // The new Post file is written beside the old one, so a folder that refuses new files makes the save fail.
+  await chmod(join(postsDir, "lorem-ipsum"), 0o555);
 
   a.type(" dolor");
   await until(() => watcher.messages.at(-1)?.error === "The Server could not save the Post file.");
-  await chmod(file, 0o644);
+  await chmod(join(postsDir, "lorem-ipsum"), 0o755);
   for (const socket of sockets.splice(0)) socket.close();
 
   await saved("---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+});
+
+test("saving keeps the Post file's permissions and a symlink to it, and leaves no other file beside it", async () => {
+  const folder = join(postsDir, "lorem-ipsum");
+  const target = join(postsDir, "kept-elsewhere.md");
+  await rename(join(folder, "index.md"), target);
+  await symlink(target, join(folder, "index.md"));
+  await chmod(target, 0o640);
+  const a = await collaborator();
+
+  a.type(" dolor");
+  await saved("---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+
+  expect((await lstat(join(folder, "index.md"))).isSymbolicLink()).toBe(true);
+  expect((await stat(target)).mode & 0o777).toBe(0o640);
+  expect(await readdir(folder)).toEqual(["index.md"]);
 });
