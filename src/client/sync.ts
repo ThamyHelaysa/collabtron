@@ -36,7 +36,7 @@ export function syncWithAuthority({
   // The Editing Session our Version belongs to, and its document at our Version.
   let instance: string | undefined;
   let confirmed: Node;
-  // One batch at a time: the Authority answers every batch, with our Steps accepted or with the ones we missed.
+  // One batch in flight, until its answer or the batch that beat it: the Authority answers every batch, with our Steps accepted or with the ones we missed.
   let awaitingAnswer = false;
   let sentVersion: number | undefined;
   // Our last Presence, in our document: remote Steps move it with our selection.
@@ -58,8 +58,14 @@ export function syncWithAuthority({
   // What this tab kept before a reload, if it can still be read: the Authority's document at `version` and the Steps on top.
   const load = () => {
     try {
-      const { instance, version, doc, steps, clientID } = JSON.parse(store.load() ?? "null");
-      const kept = { instance, version, clientID, doc: schema.nodeFromJSON(doc), steps: steps.map((json: unknown) => Step.fromJSON(schema, json)) as Step[] };
+      const saved = JSON.parse(store.load() ?? "null");
+      const kept = {
+        instance: saved.instance as string,
+        version: saved.version as number,
+        clientID: saved.clientID as number | string | undefined,
+        doc: schema.nodeFromJSON(saved.doc),
+        steps: saved.steps.map((json: unknown) => Step.fromJSON(schema, json)) as Step[],
+      };
       // Throws on a Step that does not apply.
       return { ...kept, local: kept.steps.reduce((tr, step) => tr.step(step), new Transform(kept.doc)).doc };
     } catch {
@@ -101,7 +107,7 @@ export function syncWithAuthority({
       awaitingAnswer = false;
       sent = undefined;
       // Versions only grow: a smaller one is another Authority's.
-      const onSameAuthority = (kept: unknown, version: number) => kept === message.instance && version <= message.version;
+      const onSameAuthority = (id: string | undefined, version: number) => id === message.instance && version <= message.version;
       const kept = editor ? undefined : load();
       if (kept && onSameAuthority(kept.instance, kept.version) && kept.steps.length) {
         // A reload: the editor as it was. Under the same clientID, Steps the Authority accepted before the reload are known as ours when they come back.

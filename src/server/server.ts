@@ -50,7 +50,7 @@ const page = `<!doctype html>
   <div id="yaml-warning" role="alert" hidden></div>
   <div id="save-warning" role="alert" hidden></div>
   <section id="recovery" aria-labelledby="recovery-title" hidden>
-    <p id="recovery-title" role="alert">The Server started over from the saved Post and could not take your last edits. Here is your text as it was in this tab: copy what you need into the editor.</p>
+    <p id="recovery-title" role="alert">The Server started over from the saved Post, which lacks some of what this tab had. Here is this tab's text as it was: copy what is missing into the editor.</p>
     <div class="recovered"></div>
     <button type="button">Dismiss</button>
   </section>
