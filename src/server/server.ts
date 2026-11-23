@@ -23,6 +23,8 @@ const page = `<!doctype html>
     .raw-block, .raw-inline { font-family: monospace; background: #eee; color: #555; cursor: grab; }
     .raw-block { white-space: pre-wrap; padding: .5em; }
     .front-matter { font-family: monospace; background: #f4f4f4; padding: .5em; white-space: pre-wrap; }
+    #recovery { margin: .5em 0; padding: .5em; border: 1px solid #e90; background: #fff6e5; }
+    #recovery .ProseMirror { min-height: 0; }
     #yaml-warning, #save-warning { white-space: pre-wrap; font-family: monospace; color: #900; background: #fdeeee; border: 1px solid #d33; padding: .5em; }
     .ProseMirror-selectednode { outline: 2px solid #48f; }
     .shortcode-block { margin: 1em 0; padding: .5em; border: 1px solid #ccc; border-radius: 4px; }
@@ -47,6 +49,11 @@ const page = `<!doctype html>
   <output id="status"></output>
   <div id="yaml-warning" role="alert" hidden></div>
   <div id="save-warning" role="alert" hidden></div>
+  <section id="recovery" aria-labelledby="recovery-title" hidden>
+    <p id="recovery-title" role="alert">The Server started over from the saved Post and could not take your last edits. Here is your text as it was in this tab: copy what you need into the editor.</p>
+    <div class="recovered"></div>
+    <button type="button">Dismiss</button>
+  </section>
   <div id="editor"></div>
   <script type="module" src="/main.js"></script>
 </body>
@@ -58,7 +65,7 @@ const maxMessage = 4 * 1024 * 1024; // bytes
 // Where one Collaborator's cursor and selection are, at `version`.
 type Presence = { id: number; name: string; color: number; version: number; anchor: number; head: number };
 // Presence is kept per socket, beside the Authority: it never enters the Step log (ADR 0007).
-type EditingSession = { authority: Authority; sockets: Set<WebSocket>; presence: Map<WebSocket, Presence>; saver: PostSaver };
+type EditingSession = { instance: string; authority: Authority; sockets: Set<WebSocket>; presence: Map<WebSocket, Presence>; saver: PostSaver };
 
 export async function startServer({
   host,
@@ -75,8 +82,6 @@ export async function startServer({
   saveAfterMs?: number;
   saveEveryMs?: number;
 }) {
-  // New on every start: tells clients their Versions belong to an Authority that is gone.
-  const instance = randomUUID();
   // One Authority per open Post, loaded from the Post file when its first Collaborator joins.
   // Joining never waits between finding a loaded session here and entering it, so an ended one is never entered.
   const editingSessions = new Map<string, Promise<EditingSession>>();
@@ -101,7 +106,8 @@ export async function startServer({
           afterMs: saveAfterMs,
           everyMs: saveEveryMs,
         });
-        return { authority, sockets, presence: new Map(), saver };
+        // New with every Editing Session, so with every Server start: tells a client coming back that its Versions belong to an Authority that is gone (ADR 0008).
+        return { instance: randomUUID(), authority, sockets, presence: new Map(), saver };
       });
       editingSessions.set(post.id, session);
       // A Post that failed to open is retried by the next Collaborator.
@@ -131,7 +137,7 @@ export async function startServer({
     }
     // Left while the Post was loading: it may have been the only one.
     if (socket.readyState !== socket.OPEN) return endIfEmpty(post, entry, session);
-    const { authority, sockets, presence, saver } = session;
+    const { instance, authority, sockets, presence, saver } = session;
     const id = nextSocketId++;
     // Sent at the current Version: every Collaborator has been sent the Steps up to it, so the positions mean the same to all.
     const presenceMessage = ({ version, anchor, head, ...rest }: Presence) => {
@@ -165,6 +171,13 @@ export async function startServer({
           presence.set(socket, latest);
           const relayed = presenceMessage(latest);
           for (const other of sockets) if (other !== socket) other.send(relayed);
+          return;
+        }
+        if (message?.type === "catch-up") {
+          // A client back from a dropped connection: the Steps it missed (throws on a Version the Authority never had),
+          // then where the others are, at the Version those Steps bring it to (ADR 0008).
+          socket.send(JSON.stringify(authority.stepsSince(message.version)));
+          for (const [other, latest] of presence) if (other !== socket) socket.send(presenceMessage(latest));
           return;
         }
         if (message?.type !== "steps" || !Array.isArray(message.steps) || !message.steps.length || !["string", "number"].includes(typeof message.clientID)) throw new Error("not a steps message");

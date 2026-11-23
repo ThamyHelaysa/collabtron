@@ -1,6 +1,6 @@
 // Seam 2: the Server as a black box over WebSocket, driven by headless clients running the browser's own sync code.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { AddressInfo } from "node:net";
+import { connect, createServer, type AddressInfo, type Socket } from "node:net";
 import { execFileSync } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,7 +9,7 @@ import { collab } from "prosemirror-collab";
 import { history, undo } from "prosemirror-history";
 import { EditorState, TextSelection } from "prosemirror-state";
 import { presence, presenceKey, type Presence } from "../client/presence.ts";
-import { syncWithAuthority, type Editor } from "../client/sync.ts";
+import { syncWithAuthority, type Editor, type Store } from "../client/sync.ts";
 import { colors } from "../shared/collaborator.ts";
 import { serialize } from "../shared/markdown.ts";
 import { createPostCatalog } from "./post-catalog.ts";
@@ -19,6 +19,7 @@ let postsDir: string;
 let url: string;
 let server: Awaited<ReturnType<typeof startServer>>;
 const sockets: WebSocket[] = [];
+const collaborators: { leave(): void }[] = [];
 
 async function start(options: Partial<Parameters<typeof startServer>[0]> = {}) {
   const catalog = await createPostCatalog(postsDir, ["lorem-ipsum"]);
@@ -37,16 +38,19 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  // Before the Server closes: a Collaborator whose connection drops tries again.
+  for (const client of collaborators.splice(0)) client.leave();
   for (const socket of sockets.splice(0)) socket.close();
   await server.close();
   await rm(postsDir, { recursive: true, force: true });
 });
 
-function open(postId = "lorem-ipsum", options?: ConstructorParameters<typeof WebSocket>[1]) {
-  const socket = new WebSocket(url + postId, options);
+function track(socket: WebSocket) {
   sockets.push(socket);
   return socket;
 }
+
+const open = (postId = "lorem-ipsum", options?: ConstructorParameters<typeof WebSocket>[1]) => track(new WebSocket(url + postId, options));
 
 const until = (done: () => boolean) => expect.poll(done, { timeout: 2000, interval: 5 }).toBe(true);
 
@@ -64,38 +68,83 @@ async function raw(postId?: string) {
   return { socket, messages, presence, send: (message: unknown) => socket.send(JSON.stringify(message)) };
 }
 
-// A headless Collaborator: real prosemirror-collab state, no DOM.
-async function collaborator(name = "Ana", color = 0) {
+// A tab's storage for one Post, kept across reloads.
+const tabStorage = (): Store => {
+  let kept: string | null = null;
+  return { load: () => kept, save: (value) => void (kept = value) };
+};
+
+// A headless Collaborator: real prosemirror-collab state, no DOM. It reaches the Server at `via` (the Server itself by default).
+async function collaborator(name = "Ana", color = 0, { via, store = tabStorage() }: { via?: string; store?: Store } = {}) {
   let editor: Editor | undefined;
-  const socket = open();
-  const push = syncWithAuthority(socket, { name, color }, (doc, version) => {
-    editor = {
-      state: EditorState.create({ doc, plugins: [history(), collab({ version }), presence] }),
-      dispatch(tr) {
-        this.state = this.state.apply(tr);
-        push();
-      },
-    };
-    return editor;
+  // What it was offered back, as Markdown.
+  const recovered: string[] = [];
+  const sync = syncWithAuthority({
+    connect: () => (via ? track(new WebSocket(via + "lorem-ipsum")) : open()),
+    me: { name, color },
+    store,
+    open: (doc, version, clientID) => {
+      editor = {
+        state: EditorState.create({ doc, plugins: [history(), collab({ version, clientID }), presence] }),
+        dispatch(tr) {
+          this.state = this.state.apply(tr);
+          sync.push();
+        },
+      };
+      return editor;
+    },
+    recover: (doc) => recovered.push(serialize(doc)),
   });
   await until(() => !!editor);
-  const client = editor!;
-  return {
+  const client = {
     get markdown() {
-      return serialize(client.state.doc);
+      return serialize(editor!.state.doc);
     },
+    recovered,
     // Types at the start (or end) of the last paragraph.
     type(text: string, where: "start" | "end" = "end") {
-      const end = client.state.doc.content.size - 1;
-      client.dispatch(client.state.tr.insertText(text, where === "end" ? end : end - client.state.doc.lastChild!.content.size));
+      const end = editor!.state.doc.content.size - 1;
+      editor!.dispatch(editor!.state.tr.insertText(text, where === "end" ? end : end - editor!.state.doc.lastChild!.content.size));
     },
-    undo: () => undo(client.state, (tr) => client.dispatch(tr)),
-    select: (anchor: number, head: number) => client.dispatch(client.state.tr.setSelection(TextSelection.create(client.state.doc, anchor, head))),
+    undo: () => undo(editor!.state, (tr) => editor!.dispatch(tr)),
+    select: (anchor: number, head: number) => editor!.dispatch(editor!.state.tr.setSelection(TextSelection.create(editor!.state.doc, anchor, head))),
     // The other Collaborators, where this one sees them.
     get others() {
-      return [...presenceKey.getState(client.state)!.values()];
+      return [...presenceKey.getState(editor!.state)!.values()];
     },
-    leave: () => socket.close(),
+    // Closes the tab.
+    leave: sync.stop,
+  };
+  collaborators.push(client);
+  return client;
+}
+
+// Stands between a client and the Server, so a test can cut the connection as a network would, with no closing handshake.
+async function relay() {
+  const port = (server.address() as AddressInfo).port;
+  const lines = new Set<[client: Socket, upstream: Socket]>();
+  const relay = createServer((client) => {
+    const upstream = connect(port, "127.0.0.1");
+    lines.add([client, upstream]);
+    for (const end of [client, upstream]) {
+      end.on("error", () => {});
+      end.on("close", () => (client.destroy(), upstream.destroy()));
+    }
+    client.pipe(upstream).pipe(client);
+  });
+  await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
+  return {
+    url: `ws://127.0.0.1:${(relay.address() as AddressInfo).port}/ws/`,
+    // The Server still hears its clients, they no longer hear it.
+    mute() {
+      for (const [client, upstream] of lines) upstream.unpipe(client);
+    },
+    cut() {
+      for (const line of lines) for (const end of line) end.destroy();
+      lines.clear();
+    },
+    // Takes no new connection; the ones open end with their clients.
+    close: () => void relay.close(),
   };
 }
 
@@ -156,6 +205,8 @@ test("Steps that do not apply close the socket and change nothing", async () => 
     // Valid for the schema, but it deletes the Front Matter Block.
     { type: "steps", version: 0, steps: [{ stepType: "replace", from: 0, to: 14 }], clientID: "a" },
     { type: "steps", version: 0, steps: [insert("x")] },
+    { type: "catch-up", version: 7 },
+    { type: "catch-up" },
     "nonsense",
   ]) {
     const client = await raw();
@@ -201,15 +252,113 @@ test("undo reverts only the local Collaborator's Steps", async () => {
   await converged([a, b], "---\ntitle: Lorem\n---\n\nTheirs Ipsum\n");
 });
 
-test("each Server start has its own instance ID, sent to every client", async () => {
+test("each Editing Session has its own instance ID, sent to every client, and a Server restart starts a new one", async () => {
   const [first, second] = [await raw(), await raw()];
   expect(first.messages[0].instance).toMatch(/\S{16,}/);
   expect(second.messages[0].instance).toBe(first.messages[0].instance);
 
+  // Its Authority, Step log included, goes with the last Collaborator: Versions from it mean nothing to the next one.
+  for (const socket of sockets.splice(0)) socket.close();
+  await expect
+    .poll(async () => {
+      const newcomer = await raw();
+      newcomer.socket.close();
+      return newcomer.messages[0].instance;
+    })
+    .not.toBe(first.messages[0].instance);
+
+  const third = await raw();
   await server.close();
   await start();
 
-  expect((await raw()).messages[0].instance).not.toBe(first.messages[0].instance);
+  expect((await raw()).messages[0].instance).not.toBe(third.messages[0].instance);
+});
+
+test("after a Server restart, what a Collaborator typed while it was down is offered back, and it follows the Post file", async () => {
+  const [a, b] = [await collaborator("Ana"), await collaborator("Bia", 1)];
+  a.type(" dolor");
+  await saved("---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+
+  await server.close();
+  a.type(" amet");
+  await start();
+
+  await until(() => a.recovered.length === 1);
+  expect(a.recovered).toEqual(["---\ntitle: Lorem\n---\n\nIpsum dolor amet\n"]);
+  // Its unconfirmed Steps are gone: they belonged to the old Authority.
+  await converged([a, b], "---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+  a.type(" sit");
+  await converged([a, b], "---\ntitle: Lorem\n---\n\nIpsum dolor sit\n");
+  // b lost nothing, so it is offered nothing.
+  expect(b.recovered).toEqual([]);
+});
+
+test("a Collaborator whose connection drops sends what it typed meanwhile once it is back, over what the others typed", async () => {
+  const line = await relay();
+  const [a, b] = [await collaborator("Ana", 0, { via: line.url }), await collaborator("Bia", 1)];
+  a.type(" dolor");
+  await converged([a, b], "---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+
+  line.cut();
+  b.type("Lorem ", "start");
+  a.type(" amet");
+
+  await converged([a, b], "---\ntitle: Lorem\n---\n\nLorem Ipsum dolor amet\n");
+  expect(a.recovered).toEqual([]);
+  // Each sees the other again. The Presence sent to a on joining was at a Version a had not caught up to.
+  await until(() => a.others.length === 1 && b.others.length === 1);
+  expect([a.others, b.others]).toEqual([[expect.objectContaining({ name: "Bia" })], [expect.objectContaining({ name: "Ana" })]]);
+  line.close();
+});
+
+test("a Collaborator who closes the tab while cut off sends what it typed once the tab is open again", async () => {
+  const line = await relay();
+  const store = tabStorage();
+  const [a, b] = [await collaborator("Ana", 0, { via: line.url, store }), await collaborator("Bia", 1)];
+  a.type(" dolor");
+  await converged([a, b], "---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+
+  line.close();
+  line.cut();
+  b.type("Lorem ", "start");
+  a.type(" amet");
+  a.leave();
+  const again = await collaborator("Ana", 0, { store });
+
+  await converged([again, b], "---\ntitle: Lorem\n---\n\nLorem Ipsum dolor amet\n");
+  expect(again.recovered).toEqual([]);
+});
+
+test("Steps the Authority accepted just before the tab closed are not sent again when it is open again", async () => {
+  const line = await relay();
+  const store = tabStorage();
+  const [a, b] = [await collaborator("Ana", 0, { via: line.url, store }), await collaborator("Bia", 1)];
+
+  line.mute();
+  a.type(" dolor");
+  // Accepted, but a never hears it: they are still unconfirmed when the tab closes.
+  await converged([b], "---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+  line.close();
+  line.cut();
+  a.leave();
+  const again = await collaborator("Ana", 0, { store });
+  b.type("!");
+
+  await converged([again, b], "---\ntitle: Lorem\n---\n\nIpsum dolor!\n");
+});
+
+test("a Collaborator who closes the tab while the Server is down is offered what it typed when the tab is open again", async () => {
+  const store = tabStorage();
+  const a = await collaborator("Ana", 0, { store });
+
+  await server.close();
+  a.type(" amet");
+  a.leave();
+  await start();
+  const again = await collaborator("Ana", 0, { store });
+
+  expect(again.recovered).toEqual(["---\ntitle: Lorem\n---\n\nIpsum amet\n"]);
+  expect(again.markdown).toBe("---\ntitle: Lorem\n---\n\nIpsum\n");
 });
 
 test("the Server sends a heartbeat on its interval", async () => {
