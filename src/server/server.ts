@@ -1,7 +1,7 @@
 import { createServer, request } from "node:http";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Duplex } from "node:stream";
+import { pipeline, type Duplex } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import { colors, displayName } from "../shared/collaborator.ts";
@@ -90,7 +90,7 @@ export async function startServer({
   catalog: PostCatalog;
   // The site's own Eleventy dev server: every path the editor does not use is proxied to `url`,
   // and `page` says where it put a Post file (ADR 0009).
-  eleventy?: { url: string; page(file: string): string | undefined };
+  eleventy?: { url: string; pageUrl(file: string): string | undefined };
   heartbeatMs?: number;
   saveAfterMs?: number;
   saveEveryMs?: number;
@@ -236,10 +236,11 @@ export async function startServer({
       } else if (route[1] === "api/posts" && req.method === "GET") {
         res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" }).end(await readPost(post));
       } else if (route[1] === "preview" && req.method === "GET") {
-        const page = eleventy?.page(post.file);
-        if (page) res.writeHead(302, { location: page }).end();
+        const pageUrl = eleventy?.pageUrl(post.file);
+        // A header takes ASCII only; a permalink need not be.
+        if (pageUrl) res.writeHead(302, { location: encodeURI(pageUrl) }).end();
         // Until the site's first build that worked: the preview asks again on its own.
-        else res.writeHead(503, { "content-type": "text/plain; charset=utf-8", refresh: "2" }).end("The site is not built yet, or its build failed: the terminal says why. This retries on its own.");
+        else res.writeHead(503, { "content-type": "text/plain; charset=utf-8", refresh: "2" }).end("The site has no page for this Post yet. Its build may still be running, or have failed (the terminal says why), or the site may not render this Post while serving. This retries on its own.");
       } else {
         res.writeHead(405).end();
       }
@@ -262,7 +263,8 @@ export async function startServer({
     // At the root, not under a prefix: the site's pages use absolute URLs.
     const site = request(new URL(req.url!, eleventy.url), { method: req.method, headers: req.headers }, (answer) => {
       res.writeHead(answer.statusCode!, answer.headers);
-      answer.pipe(res);
+      // Either side closing early closes the other: a reset page ends, a closed tab frees the dev server.
+      pipeline(answer, res, () => {});
     });
     site.on("error", (err) => {
       if (res.headersSent) return void res.destroy();
@@ -312,10 +314,10 @@ export async function startServer({
 }
 
 // The site's live reload socket: Eleventy's reload client opens it at ws://<the page's host>/, so here.
-function proxyUpgrade(eleventy: string, req: IncomingMessage, socket: Duplex, head: Buffer) {
+function proxyUpgrade(siteUrl: string, req: IncomingMessage, socket: Duplex, head: Buffer) {
   // A tab closing resets its socket: routine, and each end closes the other below.
   socket.on("error", () => {});
-  const site = request(new URL(req.url!, eleventy), { headers: req.headers });
+  const site = request(new URL(req.url!, siteUrl), { headers: req.headers });
   socket.on("close", () => site.destroy());
   site.on("upgrade", (answer, siteSocket, siteHead) => {
     siteSocket.on("error", () => {}).on("close", () => socket.destroy());

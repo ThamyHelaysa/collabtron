@@ -1,3 +1,4 @@
+import { relative } from "node:path";
 import { startEleventy } from "./eleventy.ts";
 import { createPostCatalog } from "./post-catalog.ts";
 import { startServer } from "./server.ts";
@@ -16,6 +17,8 @@ const siteDir = process.env.SITE_DIR;
 if (!siteDir) throw new Error("SITE_DIR not set: the local clone of the Eleventy site");
 const postsDir = process.env.POSTS_DIR;
 if (!postsDir) throw new Error("POSTS_DIR not set: the site's posts directory");
+// Eleventy knows a Post's page by its path inside the site.
+if (relative(siteDir, postsDir).startsWith("..")) throw new Error("POSTS_DIR is not inside SITE_DIR: the preview could never find a Post");
 const postId = process.argv[2];
 if (!postId) throw new Error("usage: pnpm dev <post-id>");
 const catalog = await createPostCatalog(postsDir, [postId]);

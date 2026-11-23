@@ -115,7 +115,7 @@ test("the editor opens even when the site's first build fails, and the preview c
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${(brokenServer.address() as AddressInfo).port}/p/lorem-broken`);
     await expect.poll(() => paragraph(page).textContent(), { timeout: 5000 }).toBe("Ipsum");
-    await expect.poll(() => page.frameLocator("#preview").locator("body").textContent(), { timeout: 10_000 }).toContain("its build failed");
+    await expect.poll(() => page.frameLocator("#preview").locator("body").textContent(), { timeout: 10_000 }).toContain("no page for this Post yet");
 
     await writeFile(join(site.postsDir, "lorem-broken", "index.md"), "---\ntitle: Broken\n---\n\nFixed\n");
     await expect.poll(() => page.frameLocator("#preview").locator(".site-layout p").textContent(), { timeout: 15_000 }).toBe("Fixed");

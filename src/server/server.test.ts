@@ -32,7 +32,7 @@ beforeEach(async () => {
   const server = await startServer({ host: "127.0.0.1", port: 0, catalog, eleventy: {
       url: `http://127.0.0.1:${(eleventy.address() as AddressInfo).port}`,
       // Where the site put each Post, as Eleventy's content map says.
-      page: (file) => (file === join(postsDir, "lorem-ipsum", "index.md") ? "/blog/2026/lorem-ipsum/" : undefined),
+      pageUrl: (file) => (file === join(postsDir, "lorem-ipsum", "index.md") ? "/blog/2026/lorem-ipsum/" : undefined),
     },
   });
   close = server.close;

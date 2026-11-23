@@ -3,14 +3,14 @@
 import { existsSync, watch } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { buildAgain } from "./eleventy.ts";
+import { buildAgain, type LauncherMessage } from "./eleventy.ts";
 
 type EleventyConfig = { on(event: string, listener: (arg: any) => void): void; setServerOptions(options: object): void };
 
 // The site's Eleventy, not one of collabtron's. `watch` and `serve` are what its cmd.cjs runs: public, but undocumented.
 const { Eleventy } = await import(pathToFileURL(join(process.cwd(), "node_modules/@11ty/eleventy/src/Eleventy.js")).href);
-const send = (message: object) => process.send!(message);
-let inputPathToUrl = {};
+const send = (message: LauncherMessage) => process.send!(message);
+let inputPathToUrl: Record<string, string[]> = {};
 const eleventy = new Eleventy(undefined, undefined, {
   source: "cli",
   runMode: "serve",
@@ -37,13 +37,14 @@ eleventy.serve("0");
 process.on("disconnect", () => process.exit());
 
 // Eleventy stops watching when its first build fails, as `eleventy --serve` does, and keeps what it read cached:
-// once a file of the site changes, a new launcher builds again from scratch. Never for what the build itself writes.
+// once a file of the site changes, a new launcher builds again from scratch. Never for what the build itself writes,
+// nor for the Server's own temp files (ADR 0006): the rename that follows them is the change.
 let failed = false;
 let changed = false;
 const output = resolve(eleventy.directories.output);
 const watcher = watch(eleventy.directories.input, { recursive: true }, (_event, name) => {
   const path = resolve(eleventy.directories.input, String(name));
-  if (path.startsWith(output + sep) || path.split(sep).includes("node_modules")) return;
+  if (path.startsWith(output + sep) || path.split(sep).includes("node_modules") || path.endsWith("~")) return;
   changed = true;
   if (failed) process.exit(buildAgain);
 });

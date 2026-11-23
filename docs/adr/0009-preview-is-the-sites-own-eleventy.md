@@ -13,7 +13,7 @@ Every other path the editor does not use (`/p/`, `/api/posts/`, `/preview/`, `/w
 
 The preview refreshes through the site's own live reload. The Server saves ([ADR 0006](0006-server-saves-never-over-outside-changes.md)), Eleventy rebuilds, and its reload client in the iframe reloads or morphs the page. A Post with `draft: true` works when the site still renders drafts while serving, as this site does: its draft check only leaves them out of collections.
 
-When the site's first build fails, Eleventy stops, as `npm start` does. The editor is how a Post that breaks the build gets fixed, so the Server starts anyway. The launcher watches the site's input folder, ignoring the output folder and `node_modules`. Once a file changes, it exits with code 75, and `startEleventy` forks a new one. A retry in the same process would build stale text: Eleventy caches the files it read in module state, and only its own watcher clears it.
+When the site's first build fails, Eleventy stops, as `npm start` does. The editor is how a Post that breaks the build gets fixed, so the Server starts anyway. The launcher watches the site's input folder, ignoring the output folder, `node_modules` and the Server's own temp files (names ending in `~`). Once a file changes, it exits with code 75, and `startEleventy` forks a new one. A retry in the same process would build stale text: Eleventy caches the files it read in module state, and only its own watcher clears it.
 
 ## Considered Options
 
@@ -31,5 +31,9 @@ When the site's first build fails, Eleventy stops, as `npm start` does. The edit
 - `watch`, `serve` and `directories` are public methods of Eleventy, but they are not documented: recheck them on each Eleventy minor version.
 - `pnpm dev` builds the whole site before the preview shows, and `node --watch` restarts the Server and its Eleventy with it.
 - A site with a `pathPrefix` is not supported yet: the map's URLs lack it.
+- `POSTS_DIR` must be inside `SITE_DIR`, since the map is keyed by paths inside the site: the Server refuses to start otherwise. A Post the site does not render while serving (`permalink: false` for drafts) keeps the preview on its retry message.
+- The proxy sits at the root, so a site file at `/main.js`, `/p/…`, `/preview/…` or `/ws/…` is hidden by the editor's own. This site has none.
+- The launcher's `ready` server option is replaced if the site's config sets its own: the Server would then wait forever at start. This site sets none.
+- If the launcher dies after it served, the Server says so in the terminal and the preview answers `502` until the Server restarts.
 - Eleventy 4 uses Server-Sent Events for live reload instead of a WebSocket. The HTTP proxy streams responses, but that is untested.
 - New dev dependency: `@11ty/eleventy`. Seam 3 runs the launcher against a small fixture site. At run time, collabtron uses the site's own Eleventy.

@@ -6,8 +6,11 @@ import { join, relative, sep } from "node:path";
 // The launcher's exit code when the site's first build failed and a file changed since: a new launcher builds again.
 export const buildAgain = 75;
 
+// What the launcher tells the Server, over IPC.
+export type LauncherMessage = { type: "ready"; url: string } | { type: "contentMap"; inputPathToUrl: Record<string, string[]> };
+
 // Starts the site's own Eleventy dev server and learns, from Eleventy itself, the URL each Post file renders to (ADR 0009).
-// Resolves once it serves, before the first build is done: until a build works, `page` knows no Post.
+// Resolves once it serves, before the first build is done: until a build works, `pageUrl` knows no Post.
 export function startEleventy(siteDir: string) {
   let inputPathToUrl: Record<string, string[]> = {};
   let child: ChildProcess;
@@ -17,7 +20,7 @@ export function startEleventy(siteDir: string) {
     url: "",
     // Eleventy's keys are relative to the site, with `./` and `/`.
     // shortcut: no pathPrefix in front of the URL; add Eleventy's when a site sets one.
-    page: (file: string): string | undefined => inputPathToUrl[`./${relative(siteDir, file).split(sep).join("/")}`]?.[0],
+    pageUrl: (file: string): string | undefined => inputPathToUrl[`./${relative(siteDir, file).split(sep).join("/")}`]?.[0],
     async close() {
       closed = true;
       if (child.exitCode !== null || child.signalCode !== null) return;
@@ -35,10 +38,14 @@ export function startEleventy(siteDir: string) {
         execArgv: existsSync(join(siteDir, "eleventy.config.ts")) ? ["--import", "tsx"] : [],
       });
       child.once("exit", (code) => {
-        if (code === buildAgain && !closed) launch();
-        else reject(new Error(`the site's Eleventy stopped (exit code ${code})`));
+        if (closed) return;
+        if (code === buildAgain) return launch();
+        const error = new Error(`the site's Eleventy stopped (exit code ${code}): the preview is gone until the Server restarts`);
+        // After it served, nothing awaits the promise any more.
+        if (eleventy.url) console.error(error.message);
+        reject(error);
       });
-      child.on("message", (message: { type: string; url: string; inputPathToUrl: Record<string, string[]> }) => {
+      child.on("message", (message: LauncherMessage) => {
         if (message.type === "contentMap") inputPathToUrl = message.inputPathToUrl;
         if (message.type !== "ready") return;
         eleventy.url = message.url;
