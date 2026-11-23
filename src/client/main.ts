@@ -5,8 +5,10 @@ import { keymap } from "prosemirror-keymap";
 import { wrapInList } from "prosemirror-schema-list";
 import { EditorState, Plugin, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
+import { colors, displayName } from "../shared/collaborator.ts";
 import { frontMatterError, schema } from "../shared/markdown.ts";
 import { keepFrontMatter } from "./front-matter.ts";
+import { presence } from "./presence.ts";
 import { syncWithAuthority } from "./sync.ts";
 import { exitCaption, insertDetails, insertImageContainer, insertVideoContainer, setQuoteVariant, shortcodeViews } from "./shortcode-blocks.ts";
 
@@ -60,9 +62,23 @@ const tools: [string, Command][] = [
 // The Server saves on its own (ADR 0006); this keeps Mod-s from opening the browser's Save dialog.
 const ignoreSave: Command = () => true;
 
+// Asked on the first visit and remembered in this browser; asked again next time if left empty.
+// The Server closes the socket on a name `displayName` would change, or a colour number outside `colors`:
+// both are cleaned or picked again here, or one stored wrong would close it on every visit.
+let name = displayName(localStorage.getItem("collabtron.name") ?? "");
+if (!name) {
+  name = displayName(prompt("Your name, shown to the other Collaborators") ?? "");
+  if (name) localStorage.setItem("collabtron.name", name);
+}
+let color = parseInt(localStorage.getItem("collabtron.color") ?? "");
+if (!(color >= 0 && color < colors.length)) {
+  color = Math.floor(Math.random() * colors.length);
+  localStorage.setItem("collabtron.color", String(color));
+}
+
 let view: EditorView | undefined;
 const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(postId)}`);
-const push = syncWithAuthority(socket, (doc, version) => {
+const push = syncWithAuthority(socket, { name: name || "Anonymous", color }, (doc, version) => {
   view = new EditorView(document.querySelector("#editor"), {
     nodeViews: shortcodeViews,
     dispatchTransaction(tr) {
@@ -75,6 +91,7 @@ const push = syncWithAuthority(socket, (doc, version) => {
         // With collab, undo reverts only this Collaborator's Steps.
         history(),
         collab({ version }),
+        presence,
         yamlCheck,
         keepFrontMatter,
         keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": ignoreSave, Enter: exitCaption }),

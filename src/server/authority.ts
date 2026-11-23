@@ -1,5 +1,5 @@
 import type { Node } from "prosemirror-model";
-import { Step } from "prosemirror-transform";
+import { Mapping, Step } from "prosemirror-transform";
 import { schema } from "../shared/markdown.ts";
 
 export type ClientID = string | number;
@@ -9,6 +9,11 @@ export type StepsMessage = { type: "steps"; version: number; steps: unknown[]; c
 // Holds one Post's official document, Version and in-memory Step log (ADR 0001).
 export function createAuthority(doc: Node) {
   const log: { step: Step; clientID: ClientID }[] = [];
+  // The Steps accepted after `version`. Throws on a Version this Authority never had.
+  const since = (version: number) => {
+    if (!Number.isInteger(version) || version < 0 || version > log.length) throw new Error(`no Version ${version}`);
+    return log.slice(version);
+  };
 
   return {
     get doc() {
@@ -18,12 +23,13 @@ export function createAuthority(doc: Node) {
     get version() {
       return log.length;
     },
-    // What a client at `version` is missing. Throws on a Version this Authority never had.
+    // What a client at `version` is missing.
     stepsSince(version: number): StepsMessage {
-      if (!Number.isInteger(version) || version < 0 || version > log.length) throw new Error(`no Version ${version}`);
-      const missing = log.slice(version);
+      const missing = since(version);
       return { type: "steps", version, steps: missing.map(({ step }) => step.toJSON()), clientIDs: missing.map(({ clientID }) => clientID) };
     },
+    // Maps positions in the document at `version` to the current one.
+    mapping: (version: number) => new Mapping(since(version).map(({ step }) => step.getMap())),
     // Accepts Steps only when based on the current Version: false means stale, the client must rebase.
     // Throws, accepting none, when a Step does not apply.
     receive(version: number, steps: unknown[], clientID: ClientID): boolean {
