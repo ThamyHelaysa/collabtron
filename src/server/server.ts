@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
+import { colors, displayName } from "../shared/collaborator.ts";
 import { parse, serialize } from "../shared/markdown.ts";
 import { createAuthority, type Authority } from "./authority.ts";
 import type { Post, PostCatalog } from "./post-catalog.ts";
@@ -34,8 +35,11 @@ const page = `<!doctype html>
     .details { border: 1px solid #ccc; border-radius: 4px; padding: .5em; }
     .details-summary { font-weight: bold; }
     .details-summary::before { content: "▸ "; }
-    .presence { position: relative; margin: 0 -1px; border-left: 2px solid; }
-    .presence > span { position: absolute; bottom: 100%; left: -2px; padding: 0 .25em; border-radius: 2px; font: 11px/1.4 sans-serif; color: #fff; white-space: nowrap; pointer-events: none; user-select: none; }
+    .presence { position: relative; margin: 0 -1px; border-left: 2px solid var(--presence); }
+    .presence > span { position: absolute; bottom: 100%; left: -2px; padding: 0 .25em; border-radius: 2px; background: var(--presence); font: 11px/1.4 sans-serif; color: #fff; white-space: nowrap; pointer-events: none; user-select: none; }
+    .presence-selection { background: color-mix(in srgb, var(--presence) 20%, transparent); }
+    .presence-block { outline: 2px solid var(--presence); }
+    ${colors.map((color, number) => `.presence-color-${number} { --presence: ${color}; }`).join("\n    ")}
   </style>
 </head>
 <body>
@@ -52,7 +56,7 @@ const page = `<!doctype html>
 const maxMessage = 4 * 1024 * 1024; // bytes
 
 // Where one Collaborator's cursor and selection are, at `version`.
-type Presence = { id: number; name: string; color: string; version: number; anchor: number; head: number };
+type Presence = { id: number; name: string; color: number; version: number; anchor: number; head: number };
 // Presence is kept per socket, beside the Authority: it never enters the Step log (ADR 0007).
 type EditingSession = { authority: Authority; sockets: Set<WebSocket>; presence: Map<WebSocket, Presence>; saver: PostSaver };
 
@@ -150,7 +154,10 @@ export async function startServer({
         const message = JSON.parse(data.toString());
         if (message?.type === "presence") {
           const { version, anchor, head, name, color } = message;
-          if (typeof name !== "string" || typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color) || ![anchor, head].every(Number.isInteger)) throw new Error("not a presence message");
+          // Nothing else reaches the others: a name could hide or reorder text, a colour could carry CSS (ADR 0007).
+          if (typeof name !== "string" || !name || displayName(name) !== name) throw new Error("not a display name");
+          if (!Number.isInteger(color) || color < 0 || color >= colors.length) throw new Error("not a colour number");
+          if (![anchor, head].every(Number.isInteger)) throw new Error("not a presence message");
           // Throws on a Version the Authority never had.
           const mapping = authority.mapping(version);
           const latest = { id, name, color, version: authority.version, anchor: mapping.map(anchor), head: mapping.map(head) };

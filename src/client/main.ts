@@ -5,6 +5,7 @@ import { keymap } from "prosemirror-keymap";
 import { wrapInList } from "prosemirror-schema-list";
 import { EditorState, Plugin, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
+import { colors, displayName } from "../shared/collaborator.ts";
 import { frontMatterError, schema } from "../shared/markdown.ts";
 import { keepFrontMatter } from "./front-matter.ts";
 import { presence } from "./presence.ts";
@@ -62,22 +63,22 @@ const tools: [string, Command][] = [
 const ignoreSave: Command = () => true;
 
 // Asked on the first visit and remembered in this browser; asked again next time if left empty.
-let name = localStorage.getItem("collabtron.name");
+// The Server closes the socket on a name `displayName` would change, or a colour number outside `colors`:
+// both are cleaned or picked again here, or one stored wrong would close it on every visit.
+let name = displayName(localStorage.getItem("collabtron.name") ?? "");
 if (!name) {
-  name = prompt("Your name, shown to the other Collaborators")?.trim() || null;
+  name = displayName(prompt("Your name, shown to the other Collaborators") ?? "");
   if (name) localStorage.setItem("collabtron.name", name);
 }
-let color = localStorage.getItem("collabtron.color") ?? "";
-// The Server closes the socket on a colour other than #rrggbb: one stored wrong would do it on every visit.
-if (!/^#[0-9a-f]{6}$/i.test(color)) {
-  // Each channel below 0xa0, so white text on it stays readable.
-  color = `#${[0, 0, 0].map(() => Math.floor(Math.random() * 0xa0).toString(16).padStart(2, "0")).join("")}`;
-  localStorage.setItem("collabtron.color", color);
+let color = parseInt(localStorage.getItem("collabtron.color") ?? "");
+if (!(color >= 0 && color < colors.length)) {
+  color = Math.floor(Math.random() * colors.length);
+  localStorage.setItem("collabtron.color", String(color));
 }
 
 let view: EditorView | undefined;
 const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(postId)}`);
-const push = syncWithAuthority(socket, { name: name ?? "Anonymous", color }, (doc, version) => {
+const push = syncWithAuthority(socket, { name: name || "Anonymous", color }, (doc, version) => {
   view = new EditorView(document.querySelector("#editor"), {
     nodeViews: shortcodeViews,
     dispatchTransaction(tr) {

@@ -10,6 +10,7 @@ import { history, undo } from "prosemirror-history";
 import { EditorState, TextSelection } from "prosemirror-state";
 import { presence, presenceKey, type Presence } from "../client/presence.ts";
 import { syncWithAuthority, type Editor } from "../client/sync.ts";
+import { colors } from "../shared/collaborator.ts";
 import { serialize } from "../shared/markdown.ts";
 import { createPostCatalog } from "./post-catalog.ts";
 import { startServer } from "./server.ts";
@@ -64,7 +65,7 @@ async function raw(postId?: string) {
 }
 
 // A headless Collaborator: real prosemirror-collab state, no DOM.
-async function collaborator(name = "Ana", color = "#aa3300") {
+async function collaborator(name = "Ana", color = 0) {
   let editor: Editor | undefined;
   const socket = open();
   const push = syncWithAuthority(socket, { name, color }, (doc, version) => {
@@ -389,7 +390,7 @@ test("a save whose folder cannot be synced to disk does not stop saving", async 
   }
 });
 
-const presenceMessage = (version: number, anchor: number, head: number) => ({ type: "presence", version, anchor, head, name: "Ana", color: "#aa3300" });
+const presenceMessage = (version: number, anchor: number, head: number) => ({ type: "presence", version, anchor, head, name: "Ana", color: 0 });
 
 test("Presence is relayed to the other Collaborators and never enters the Step log", async () => {
   const [a, b] = [await raw(), await raw()];
@@ -412,9 +413,21 @@ test("Presence is relayed to the other Collaborators and never enters the Step l
 test("Presence that is not valid closes the socket and is not relayed", async () => {
   const watcher = await raw();
   for (const message of [
+    // A colour is a number into the palette, never CSS.
+    { ...presenceMessage(0, 15, 20), color: "#aa3300" },
     { ...presenceMessage(0, 15, 20), color: "red; background: url(x)" },
-    { ...presenceMessage(0, 15, 20), color: ["#aa3300"] },
+    { ...presenceMessage(0, 15, 20), color: "1" },
+    { ...presenceMessage(0, 15, 20), color: 1.5 },
+    { ...presenceMessage(0, 15, 20), color: -1 },
+    { ...presenceMessage(0, 15, 20), color: colors.length },
     { ...presenceMessage(0, 15, 20), name: 7 },
+    { ...presenceMessage(0, 15, 20), name: "" },
+    { ...presenceMessage(0, 15, 20), name: " Ana" },
+    { ...presenceMessage(0, 15, 20), name: "a".repeat(51) },
+    { ...presenceMessage(0, 15, 20), name: "Ana\nBia" },
+    // Right-to-left override and zero-width space: they hide or reorder what the others read.
+    { ...presenceMessage(0, 15, 20), name: "\u202eanA" },
+    { ...presenceMessage(0, 15, 20), name: "A\u200bna" },
     { ...presenceMessage(0, 15, 1.5) },
     { ...presenceMessage(0, 15, 999) },
     { ...presenceMessage(0, -1, 15) },
@@ -426,6 +439,11 @@ test("Presence that is not valid closes the socket and is not relayed", async ()
   }
 
   expect(watcher.presence).toEqual([]);
+  // The limits themselves pass: 50 characters counted in code points, not UTF-16 units, and the last colour.
+  const longest = await raw();
+  longest.send({ ...presenceMessage(0, 15, 20), name: "Çã 🙂".repeat(10), color: colors.length - 1 });
+  await until(() => watcher.presence.length === 1);
+  expect(watcher.presence[0]).toMatchObject({ name: "Çã 🙂".repeat(10), color: colors.length - 1 });
 });
 
 test("the others are told when a Collaborator leaves, and a newcomer never hears of them", async () => {
@@ -444,17 +462,17 @@ test("the others are told when a Collaborator leaves, and a newcomer never hears
 });
 
 test("each Collaborator sees where the others are, once their Steps are confirmed", async () => {
-  const [a, b] = [await collaborator("Ana", "#aa3300"), await collaborator("Bia", "#0033aa")];
+  const [a, b] = [await collaborator("Ana", 0), await collaborator("Bia", 1)];
   await until(() => a.others.length === 1 && b.others.length === 1);
-  expect(a.others).toEqual([expect.objectContaining({ name: "Bia", color: "#0033aa" })]);
+  expect(a.others).toEqual([expect.objectContaining({ name: "Bia", color: 1 })]);
 
   a.select(15, 20);
   await until(() => b.others[0].head === 20);
-  expect(b.others).toEqual([{ name: "Ana", color: "#aa3300", anchor: 15, head: 20 }]);
+  expect(b.others).toEqual([{ name: "Ana", color: 0, anchor: 15, head: 20 }]);
   // `insertText` at a position collapses the selection: Ana's cursor ends after the new text.
   a.type("!");
   await until(() => b.others[0].anchor === 21);
-  expect(b.others).toEqual([{ name: "Ana", color: "#aa3300", anchor: 21, head: 21 }]);
+  expect(b.others).toEqual([{ name: "Ana", color: 0, anchor: 21, head: 21 }]);
 
   a.leave();
   await until(() => b.others.length === 0);

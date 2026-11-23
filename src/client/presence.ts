@@ -1,8 +1,9 @@
 import { Plugin, PluginKey } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
+import type { Collaborator } from "../shared/collaborator.ts";
 
 // Where another Collaborator is, in this editor's document.
-export type Presence = { name: string; color: string; anchor: number; head: number };
+export type Presence = Collaborator & { anchor: number; head: number };
 // Set as transaction meta by sync: with no `presence`, that Collaborator left.
 export type PresenceUpdate = { id: number; presence?: Presence };
 
@@ -32,9 +33,9 @@ export const presence = new Plugin<Map<number, Presence>>({
           return [
             // A selected block, such as a Raw Block, may have no text to highlight.
             ...(node?.isBlock && from + node.nodeSize === to
-              ? [Decoration.node(from, to, { style: `outline: 2px solid ${color}` })]
+              ? [Decoration.node(from, to, { class: `presence-block presence-color-${color}` })]
               : from < to
-                ? [Decoration.inline(from, to, { style: `background-color: ${color}33` })]
+                ? [Decoration.inline(from, to, { class: `presence-selection presence-color-${color}` })]
                 : []),
             // Between blocks, a caret would take a line of its own and push the text below down.
             ...(state.doc.resolve(head).parent.inlineContent ? [Decoration.widget(head, () => caret(name, color), { key: `${id} ${name} ${color}` })] : []),
@@ -44,12 +45,10 @@ export const presence = new Plugin<Map<number, Presence>>({
   },
 });
 
-function caret(name: string, color: string) {
+// Colours come from the page's classes, one per number in `colors`: never from a value written into CSS.
+function caret(name: string, color: number) {
   const caret = document.createElement("span");
-  caret.className = "presence";
-  caret.style.borderColor = color;
-  const label = caret.appendChild(document.createElement("span"));
-  label.textContent = name;
-  label.style.backgroundColor = color;
+  caret.className = `presence presence-color-${color}`;
+  caret.appendChild(document.createElement("span")).textContent = name;
   return caret;
 }

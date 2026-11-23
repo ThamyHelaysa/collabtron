@@ -2,6 +2,7 @@ import { getVersion, receiveTransaction, sendableSteps } from "prosemirror-colla
 import type { Node } from "prosemirror-model";
 import type { EditorState, Transaction } from "prosemirror-state";
 import { Step } from "prosemirror-transform";
+import type { Collaborator } from "../shared/collaborator.ts";
 import { schema } from "../shared/markdown.ts";
 import { presenceKey, type PresenceUpdate } from "./presence.ts";
 
@@ -11,7 +12,7 @@ export type Editor = { state: EditorState; dispatch(tr: Transaction): void };
 // Keeps an editor in step with the Post's Authority over `socket`, and shows `me` to the other Collaborators.
 // `open` builds the editor from the Authority's document; its state must carry `collab({ version })` and `presence`.
 // Returns `push`: call it after every local transaction to send unconfirmed Steps, then this Collaborator's Presence.
-export function syncWithAuthority(socket: WebSocket, me: { name: string; color: string }, open: (doc: Node, version: number) => Editor) {
+export function syncWithAuthority(socket: WebSocket, me: Collaborator, open: (doc: Node, version: number) => Editor) {
   let editor: Editor | undefined;
   // One batch at a time: the Authority answers every batch, with our Steps accepted or with the ones we missed.
   let awaitingAnswer = false;
