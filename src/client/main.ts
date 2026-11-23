@@ -62,16 +62,17 @@ const tools: [string, Command][] = [
 const ignoreSave: Command = () => true;
 
 // Asked on the first visit and remembered in this browser; asked again next time if left empty.
-let name = localStorage.getItem("name");
+let name = localStorage.getItem("collabtron.name");
 if (!name) {
   name = prompt("Your name, shown to the other Collaborators")?.trim() || null;
-  if (name) localStorage.setItem("name", name);
+  if (name) localStorage.setItem("collabtron.name", name);
 }
-let color = localStorage.getItem("color");
-if (!color) {
-  // Each channel below 0xa0, so white text on it stays readable; the Server accepts only #rrggbb.
+let color = localStorage.getItem("collabtron.color") ?? "";
+// The Server closes the socket on a colour other than #rrggbb: one stored wrong would do it on every visit.
+if (!/^#[0-9a-f]{6}$/i.test(color)) {
+  // Each channel below 0xa0, so white text on it stays readable.
   color = `#${[0, 0, 0].map(() => Math.floor(Math.random() * 0xa0).toString(16).padStart(2, "0")).join("")}`;
-  localStorage.setItem("color", color);
+  localStorage.setItem("collabtron.color", color);
 }
 
 let view: EditorView | undefined;

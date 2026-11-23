@@ -13,6 +13,7 @@ The Server sends positions at its current Version: it maps them over the Steps a
 ## Consequences
 
 - A Collaborator's cursor reaches the others one round trip after they type, once their Steps are confirmed.
-- A client resends its Presence when remote Steps only moved its selection, though the others map it themselves. Only exact repeats are skipped (a `shortcut:` in `src/client/sync.ts`).
+- A client does not resend its Presence when remote Steps only moved its selection: it maps its last Presence over them, as the others do. It sends again when its selection moves any other way, and after its own Steps are confirmed.
 - A Presence message that is not valid closes the socket, as Steps do: a colour other than `#rrggbb` (it goes into a style attribute), a name that is not a string, positions that are not integers or fall outside the document, a Version the Authority never had. The name is drawn as text, never as HTML.
-- Name and colour live in the browser's `localStorage` (`name`, `color`), so tabs of one browser share them. The name is asked with `prompt()` on the first visit, and again on the next one if it was left empty. Until the token handshake, the Server takes them as sent, like `clientID` ([ADR 0005](0005-one-steps-message.md)).
+- A caret is drawn only inside text: between blocks it would take a line of its own. A selected block, such as a Raw Block, is outlined in the Collaborator's colour instead.
+- Name and colour live in the browser's `localStorage` (`collabtron.name`, `collabtron.color`), so tabs of one browser share them. A stored colour that is not `#rrggbb` is picked again, or the socket would close on every visit. The name is asked with `prompt()` on the first visit, and again on the next one if it was left empty. Until the token handshake, the Server takes them as sent, like `clientID` ([ADR 0005](0005-one-steps-message.md)).

@@ -89,7 +89,7 @@ async function collaborator(name = "Ana", color = "#aa3300") {
       client.dispatch(client.state.tr.insertText(text, where === "end" ? end : end - client.state.doc.lastChild!.content.size));
     },
     undo: () => undo(client.state, (tr) => client.dispatch(tr)),
-    select: (anchor: number, head = anchor) => client.dispatch(client.state.tr.setSelection(TextSelection.create(client.state.doc, anchor, head))),
+    select: (anchor: number, head: number) => client.dispatch(client.state.tr.setSelection(TextSelection.create(client.state.doc, anchor, head))),
     // The other Collaborators, where this one sees them.
     get others() {
       return [...presenceKey.getState(client.state)!.values()];
@@ -460,7 +460,7 @@ test("each Collaborator sees where the others are, once their Steps are confirme
   await until(() => b.others.length === 0);
 });
 
-test("the others' cursors follow remote edits", async () => {
+test("the others' Presence follows remote edits", async () => {
   // A raw client sends its Presence once: after that, only mapping moves it.
   const a = await raw();
   const [b, c] = [await collaborator("Bia"), await collaborator("Caio")];
@@ -480,4 +480,21 @@ test("the others' cursors follow remote edits", async () => {
   const d = await collaborator("Davi");
   await until(() => !!ana(d));
   expect(ana(d)).toMatchObject({ anchor: 19, head: 21 });
+});
+
+test("a Collaborator whose selection only moved with the others' edits sends no Presence for it", async () => {
+  const [a, b] = [await collaborator("Ana"), await collaborator("Bia")];
+  b.select(20, 20);
+  const watcher = await raw();
+  const bia = () => watcher.presence.filter((message) => message.name === "Bia").map((message) => message.head);
+  await until(() => bia().at(-1) === 20);
+
+  a.type("x", "start");
+  a.type("y", "start");
+  await converged([a, b], "---\ntitle: Lorem\n---\n\nyxIpsum\n");
+  // Sent on b's own socket after anything b sent while a typed.
+  b.select(15, 15);
+
+  await until(() => bia().at(-1) === 15);
+  expect(bia().slice(-2)).toEqual([20, 15]);
 });

@@ -16,7 +16,8 @@ export function syncWithAuthority(socket: WebSocket, me: { name: string; color: 
   // One batch at a time: the Authority answers every batch, with our Steps accepted or with the ones we missed.
   let awaitingAnswer = false;
   let sentAs: unknown;
-  let sentPresence: string | undefined;
+  // Our last Presence, in our document: remote Steps move it with our selection.
+  let sent: { anchor: number; head: number } | undefined;
 
   const push = () => {
     if (!editor || awaitingAnswer || socket.readyState !== WebSocket.OPEN) return;
@@ -24,9 +25,10 @@ export function syncWithAuthority(socket: WebSocket, me: { name: string; color: 
     if (!sendable) {
       // Only with none of our Steps unconfirmed do our positions mean the same in the Authority's document (ADR 0007).
       const { anchor, head } = editor.state.selection;
-      const presence = JSON.stringify({ type: "presence", version: getVersion(editor.state), anchor, head, ...me });
-      // shortcut: also resent when remote Steps only moved our selection, which the others map themselves; skip those if traffic matters.
-      if (presence !== sentPresence) socket.send((sentPresence = presence));
+      // Moved only by remote Steps: the others map it over the same Steps.
+      if (sent?.anchor === anchor && sent.head === head) return;
+      sent = { anchor, head };
+      socket.send(JSON.stringify({ type: "presence", version: getVersion(editor.state), anchor, head, ...me }));
       return;
     }
     awaitingAnswer = true;
@@ -48,7 +50,9 @@ export function syncWithAuthority(socket: WebSocket, me: { name: string; color: 
       if (isNews) {
         const steps = message.steps.slice(known).map((json: unknown) => Step.fromJSON(schema, json));
         // Confirms our Steps among them and rebases our unconfirmed ones over the rest.
-        editor.dispatch(receiveTransaction(editor.state, steps, message.clientIDs.slice(known)));
+        const tr = receiveTransaction(editor.state, steps, message.clientIDs.slice(known));
+        if (sent) sent = { anchor: tr.mapping.map(sent.anchor), head: tr.mapping.map(sent.head) };
+        editor.dispatch(tr);
       }
       push();
     } else if (message.type === "presence" && editor) {

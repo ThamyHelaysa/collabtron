@@ -78,7 +78,7 @@ export async function startServer({
   const editingSessions = new Map<string, Promise<EditingSession>>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxMessage });
   // Tells the others whose Presence a message is.
-  let nextPresenceId = 0;
+  let nextSocketId = 0;
 
   function editingSessionFor(post: Post) {
     let session = editingSessions.get(post.id);
@@ -128,7 +128,7 @@ export async function startServer({
     // Left while the Post was loading: it may have been the only one.
     if (socket.readyState !== socket.OPEN) return endIfEmpty(post, entry, session);
     const { authority, sockets, presence, saver } = session;
-    const id = nextPresenceId++;
+    const id = nextSocketId++;
     // Sent at the current Version: every Collaborator has been sent the Steps up to it, so the positions mean the same to all.
     const presenceMessage = ({ version, anchor, head, ...rest }: Presence) => {
       const mapping = authority.mapping(version);
