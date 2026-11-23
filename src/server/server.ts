@@ -34,6 +34,8 @@ const page = `<!doctype html>
     .details { border: 1px solid #ccc; border-radius: 4px; padding: .5em; }
     .details-summary { font-weight: bold; }
     .details-summary::before { content: "▸ "; }
+    .presence { position: relative; margin: 0 -1px; border-left: 2px solid; }
+    .presence > span { position: absolute; bottom: 100%; left: -2px; padding: 0 .25em; border-radius: 2px; font: 11px/1.4 sans-serif; color: #fff; white-space: nowrap; pointer-events: none; user-select: none; }
   </style>
 </head>
 <body>
@@ -49,7 +51,10 @@ const page = `<!doctype html>
 
 const maxMessage = 4 * 1024 * 1024; // bytes
 
-type EditingSession = { authority: Authority; sockets: Set<WebSocket>; saver: PostSaver };
+// Where one Collaborator's cursor and selection are, at `version`.
+type Presence = { id: number; name: string; color: string; version: number; anchor: number; head: number };
+// Presence is kept per socket, beside the Authority: it never enters the Step log (ADR 0007).
+type EditingSession = { authority: Authority; sockets: Set<WebSocket>; presence: Map<WebSocket, Presence>; saver: PostSaver };
 
 export async function startServer({
   host,
@@ -72,6 +77,8 @@ export async function startServer({
   // Joining never waits between finding a loaded session here and entering it, so an ended one is never entered.
   const editingSessions = new Map<string, Promise<EditingSession>>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxMessage });
+  // Tells the others whose Presence a message is.
+  let nextPresenceId = 0;
 
   function editingSessionFor(post: Post) {
     let session = editingSessions.get(post.id);
@@ -90,7 +97,7 @@ export async function startServer({
           afterMs: saveAfterMs,
           everyMs: saveEveryMs,
         });
-        return { authority, sockets, saver };
+        return { authority, sockets, presence: new Map(), saver };
       });
       editingSessions.set(post.id, session);
       // A Post that failed to open is retried by the next Collaborator.
@@ -120,19 +127,39 @@ export async function startServer({
     }
     // Left while the Post was loading: it may have been the only one.
     if (socket.readyState !== socket.OPEN) return endIfEmpty(post, entry, session);
-    const { authority, sockets, saver } = session;
+    const { authority, sockets, presence, saver } = session;
+    const id = nextPresenceId++;
+    // Sent at the current Version: every Collaborator has been sent the Steps up to it, so the positions mean the same to all.
+    const presenceMessage = ({ version, anchor, head, ...rest }: Presence) => {
+      const mapping = authority.mapping(version);
+      return JSON.stringify({ type: "presence", ...rest, version: authority.version, anchor: mapping.map(anchor), head: mapping.map(head) });
+    };
     sockets.add(socket);
     socket.on("close", () => {
       sockets.delete(socket);
+      if (presence.delete(socket)) for (const other of sockets) other.send(JSON.stringify({ type: "presence", id, left: true }));
       endIfEmpty(post, entry, session);
     });
     socket.send(JSON.stringify({ type: "init", instance, version: authority.version, doc: authority.doc.toJSON() }));
+    for (const other of presence.values()) socket.send(presenceMessage(other));
     // A Collaborator who joins while saving fails is told at once.
     if (saver.error) socket.send(JSON.stringify({ type: "save", error: saver.error }));
 
     socket.on("message", (data) => {
       try {
         const message = JSON.parse(data.toString());
+        if (message?.type === "presence") {
+          const { version, anchor, head, name, color } = message;
+          if (typeof name !== "string" || typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color) || ![anchor, head].every(Number.isInteger)) throw new Error("not a presence message");
+          // Throws on a Version the Authority never had.
+          const mapping = authority.mapping(version);
+          const latest = { id, name, color, version: authority.version, anchor: mapping.map(anchor), head: mapping.map(head) };
+          if (![latest.anchor, latest.head].every((pos) => pos >= 0 && pos <= authority.doc.content.size)) throw new Error("Presence outside the document");
+          presence.set(socket, latest);
+          const relayed = presenceMessage(latest);
+          for (const other of sockets) if (other !== socket) other.send(relayed);
+          return;
+        }
         if (message?.type !== "steps" || !Array.isArray(message.steps) || !message.steps.length || !["string", "number"].includes(typeof message.clientID)) throw new Error("not a steps message");
         // Validates the Version too: throws before any Step is accepted.
         const missing = authority.stepsSince(message.version);

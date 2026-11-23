@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { collab } from "prosemirror-collab";
 import { history, undo } from "prosemirror-history";
-import { EditorState } from "prosemirror-state";
+import { EditorState, TextSelection } from "prosemirror-state";
+import { presence, presenceKey, type Presence } from "../client/presence.ts";
 import { syncWithAuthority, type Editor } from "../client/sync.ts";
 import { serialize } from "../shared/markdown.ts";
 import { createPostCatalog } from "./post-catalog.ts";
@@ -48,24 +49,27 @@ function open(postId = "lorem-ipsum", options?: ConstructorParameters<typeof Web
 
 const until = (done: () => boolean) => expect.poll(done, { timeout: 2000, interval: 5 }).toBe(true);
 
-// A raw client: every message the Server sent, in order.
+// A raw client: every message the Server sent, in order, with Presence apart.
 async function raw(postId?: string) {
   const socket = open(postId);
   const messages: any[] = [];
+  const presence: any[] = [];
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
-    if (message.type !== "heartbeat") messages.push(message);
+    if (message.type === "presence") presence.push(message);
+    else if (message.type !== "heartbeat") messages.push(message);
   });
   await until(() => messages.length > 0);
-  return { socket, messages, send: (message: unknown) => socket.send(JSON.stringify(message)) };
+  return { socket, messages, presence, send: (message: unknown) => socket.send(JSON.stringify(message)) };
 }
 
 // A headless Collaborator: real prosemirror-collab state, no DOM.
-async function collaborator() {
+async function collaborator(name = "Ana", color = "#aa3300") {
   let editor: Editor | undefined;
-  const push = syncWithAuthority(open(), (doc, version) => {
+  const socket = open();
+  const push = syncWithAuthority(socket, { name, color }, (doc, version) => {
     editor = {
-      state: EditorState.create({ doc, plugins: [history(), collab({ version })] }),
+      state: EditorState.create({ doc, plugins: [history(), collab({ version }), presence] }),
       dispatch(tr) {
         this.state = this.state.apply(tr);
         push();
@@ -85,6 +89,12 @@ async function collaborator() {
       client.dispatch(client.state.tr.insertText(text, where === "end" ? end : end - client.state.doc.lastChild!.content.size));
     },
     undo: () => undo(client.state, (tr) => client.dispatch(tr)),
+    select: (anchor: number, head = anchor) => client.dispatch(client.state.tr.setSelection(TextSelection.create(client.state.doc, anchor, head))),
+    // The other Collaborators, where this one sees them.
+    get others() {
+      return [...presenceKey.getState(client.state)!.values()];
+    },
+    leave: () => socket.close(),
   };
 }
 
@@ -377,4 +387,97 @@ test("a save whose folder cannot be synced to disk does not stop saving", async 
   } finally {
     await chmod(folder, 0o755);
   }
+});
+
+const presenceMessage = (version: number, anchor: number, head: number) => ({ type: "presence", version, anchor, head, name: "Ana", color: "#aa3300" });
+
+test("Presence is relayed to the other Collaborators and never enters the Step log", async () => {
+  const [a, b] = [await raw(), await raw()];
+
+  a.send(presenceMessage(0, 15, 20));
+  await until(() => b.presence.length === 1);
+  const relayed = { ...presenceMessage(0, 15, 20), id: expect.any(Number) };
+  expect(b.presence).toEqual([relayed]);
+  a.send({ type: "steps", version: 0, steps: [insert("x")], clientID: "a" });
+  await until(() => a.messages.length === 2);
+  // Not sent back: it would have come before the sender's Steps.
+  expect(a.presence).toEqual([]);
+  // The Version counts the Step alone, and a newcomer is told where the others are.
+  const late = await raw();
+  expect(late.messages[0]).toMatchObject({ type: "init", version: 1 });
+  await until(() => late.presence.length === 1);
+  expect(late.presence).toEqual([{ ...relayed, version: 1, anchor: 16, head: 21 }]);
+});
+
+test("Presence that is not valid closes the socket and is not relayed", async () => {
+  const watcher = await raw();
+  for (const message of [
+    { ...presenceMessage(0, 15, 20), color: "red; background: url(x)" },
+    { ...presenceMessage(0, 15, 20), color: ["#aa3300"] },
+    { ...presenceMessage(0, 15, 20), name: 7 },
+    { ...presenceMessage(0, 15, 1.5) },
+    { ...presenceMessage(0, 15, 999) },
+    { ...presenceMessage(0, -1, 15) },
+    { ...presenceMessage(7, 15, 15) },
+  ]) {
+    const client = await raw();
+    client.send(message);
+    await until(() => client.socket.readyState === WebSocket.CLOSED);
+  }
+
+  expect(watcher.presence).toEqual([]);
+});
+
+test("the others are told when a Collaborator leaves, and a newcomer never hears of them", async () => {
+  const [a, b] = [await raw(), await raw()];
+  a.send(presenceMessage(0, 15, 20));
+  await until(() => b.presence.length === 1);
+
+  a.socket.close();
+
+  await until(() => b.presence.length === 2);
+  expect(b.presence[1]).toEqual({ type: "presence", id: b.presence[0].id, left: true });
+  const late = await raw();
+  late.send({ type: "steps", version: 0, steps: [insert("x")], clientID: "late" });
+  await until(() => late.messages.length === 2);
+  expect(late.presence).toEqual([]);
+});
+
+test("each Collaborator sees where the others are, once their Steps are confirmed", async () => {
+  const [a, b] = [await collaborator("Ana", "#aa3300"), await collaborator("Bia", "#0033aa")];
+  await until(() => a.others.length === 1 && b.others.length === 1);
+  expect(a.others).toEqual([expect.objectContaining({ name: "Bia", color: "#0033aa" })]);
+
+  a.select(15, 20);
+  await until(() => b.others[0].head === 20);
+  expect(b.others).toEqual([{ name: "Ana", color: "#aa3300", anchor: 15, head: 20 }]);
+  // `insertText` at a position collapses the selection: Ana's cursor ends after the new text.
+  a.type("!");
+  await until(() => b.others[0].anchor === 21);
+  expect(b.others).toEqual([{ name: "Ana", color: "#aa3300", anchor: 21, head: 21 }]);
+
+  a.leave();
+  await until(() => b.others.length === 0);
+});
+
+test("the others' cursors follow remote edits", async () => {
+  // A raw client sends its Presence once: after that, only mapping moves it.
+  const a = await raw();
+  const [b, c] = [await collaborator("Bia"), await collaborator("Caio")];
+  const ana = (client: { others: Presence[] }) => client.others.find((other) => other.name === "Ana");
+
+  a.send(presenceMessage(0, 16, 18));
+  // Most likely still unconfirmed when Ana's Presence reaches b: it lands on the same text either way.
+  b.type("XY", "start");
+  await until(() => [b, c].every((client) => ana(client)?.anchor === 18));
+  expect([ana(b), ana(c)]).toMatchObject([{ anchor: 18, head: 20 }, { anchor: 18, head: 20 }]);
+  b.type("Z", "start");
+  // At once, before the Authority answers.
+  expect(ana(b)).toMatchObject({ anchor: 19, head: 21 });
+  await until(() => ana(c)?.anchor === 19);
+  expect(ana(c)).toMatchObject({ anchor: 19, head: 21 });
+  // A newcomer gets it from the Authority, mapped over every Step since.
+  const d = await collaborator("Davi");
+  await until(() => !!ana(d));
+  expect(ana(d)).toMatchObject({ anchor: 19, head: 21 });
 });

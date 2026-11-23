@@ -7,6 +7,7 @@ import { EditorState, Plugin, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { frontMatterError, schema } from "../shared/markdown.ts";
 import { keepFrontMatter } from "./front-matter.ts";
+import { presence } from "./presence.ts";
 import { syncWithAuthority } from "./sync.ts";
 import { exitCaption, insertDetails, insertImageContainer, insertVideoContainer, setQuoteVariant, shortcodeViews } from "./shortcode-blocks.ts";
 
@@ -60,9 +61,22 @@ const tools: [string, Command][] = [
 // The Server saves on its own (ADR 0006); this keeps Mod-s from opening the browser's Save dialog.
 const ignoreSave: Command = () => true;
 
+// Asked on the first visit and remembered in this browser; asked again next time if left empty.
+let name = localStorage.getItem("name");
+if (!name) {
+  name = prompt("Your name, shown to the other Collaborators")?.trim() || null;
+  if (name) localStorage.setItem("name", name);
+}
+let color = localStorage.getItem("color");
+if (!color) {
+  // Each channel below 0xa0, so white text on it stays readable; the Server accepts only #rrggbb.
+  color = `#${[0, 0, 0].map(() => Math.floor(Math.random() * 0xa0).toString(16).padStart(2, "0")).join("")}`;
+  localStorage.setItem("color", color);
+}
+
 let view: EditorView | undefined;
 const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(postId)}`);
-const push = syncWithAuthority(socket, (doc, version) => {
+const push = syncWithAuthority(socket, { name: name ?? "Anonymous", color }, (doc, version) => {
   view = new EditorView(document.querySelector("#editor"), {
     nodeViews: shortcodeViews,
     dispatchTransaction(tr) {
@@ -75,6 +89,7 @@ const push = syncWithAuthority(socket, (doc, version) => {
         // With collab, undo reverts only this Collaborator's Steps.
         history(),
         collab({ version }),
+        presence,
         yamlCheck,
         keepFrontMatter,
         keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": ignoreSave, Enter: exitCaption }),
