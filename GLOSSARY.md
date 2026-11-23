@@ -32,6 +32,10 @@ _Avoid_: unknown block, fallback node, HTML block
 An inline piece of HTML the editor does not understand, kept as one opaque atom inside a paragraph. It can be moved or deleted as a whole, not edited inside.
 _Avoid_: inline HTML, raw span
 
+**Preview**:
+The Post's page as the site's own Eleventy renders it, shown beside the editor and refreshed after each save.
+_Avoid_: render, live view
+
 **Round-trip**:
 Opening a Post in the editor and saving it back with no edits. A Round-trip is faithful when the site renders the same HTML before and after; bytes may differ.
 _Avoid_: re-save, roundtrip test (for the property itself)

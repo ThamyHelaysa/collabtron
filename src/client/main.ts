@@ -18,6 +18,9 @@ const status = document.querySelector<HTMLElement>("#status")!;
 const yamlWarning = document.querySelector<HTMLElement>("#yaml-warning")!;
 const saveWarning = document.querySelector<HTMLElement>("#save-warning")!;
 const recovery = document.querySelector<HTMLElement>("#recovery")!;
+// The site's own page for the Post, through the Server; its live reload refreshes it after each save (ADR 0009).
+// shortcut: stays on the page it opened, so a Post whose URL moves needs a reload; send the URL with each build to follow it.
+document.querySelector<HTMLIFrameElement>("#preview")!.src = `/preview/${encodeURIComponent(postId)}`;
 
 const showYamlWarning = (state: EditorState) => {
   const error = frontMatterError(state.doc);

@@ -15,6 +15,7 @@
     "test:roundtrip:full": "node --env-file=.env scripts/full-roundtrip.ts"
   },
   "devDependencies": {
+    "@11ty/eleventy": "^3.1.8",
     "@11ty/gray-matter": "^2.1.0",
     "@types/js-yaml": "^4.0.9",
     "@types/markdown-it": "^14.2.0",
