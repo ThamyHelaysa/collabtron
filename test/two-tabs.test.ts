@@ -16,7 +16,7 @@ let catalog: PostCatalog;
 let eleventy: Awaited<ReturnType<typeof startEleventy>>;
 let server: Awaited<ReturnType<typeof startServer>>;
 
-// A small Eleventy site: its own layout, a Post URL only Eleventy knows, and drafts left out of a build.
+// A small Eleventy site: its own layout, a Post URL only Eleventy knows (front matter can move it), and drafts left out of a build.
 async function makeSite(posts: Record<string, string>) {
   const dir = await mkdtemp(join(tmpdir(), "collabtron-site-"));
   await symlink(resolve("node_modules"), join(dir, "node_modules"), "dir");
@@ -26,7 +26,7 @@ async function makeSite(posts: Record<string, string>) {
   await mkdir(postsDir, { recursive: true });
   await writeFile(
     join(postsDir, "posts.11tydata.js"),
-    'export default { layout: "post.njk", eleventyComputed: { permalink: (data) => (data.draft && process.env.ELEVENTY_RUN_MODE === "build" ? false : `/blog/${data.page.fileSlug}/`) } };\n',
+    'export default { layout: "post.njk", eleventyComputed: { permalink: (data) => (data.draft && process.env.ELEVENTY_RUN_MODE === "build" ? false : `/blog/${data.section ? `${data.section}/` : ""}${data.page.fileSlug}/`) } };\n',
   );
   for (const [id, text] of Object.entries(posts)) {
     await mkdir(join(postsDir, id));
@@ -38,7 +38,11 @@ async function makeSite(posts: Record<string, string>) {
 beforeAll(async () => {
   // The bundle the Server serves, as `pnpm build:client` makes it.
   await build({ entryPoints: ["src/client/main.ts"], bundle: true, format: "esm", outdir: "dist/client", logLevel: "warning" });
-  const site = await makeSite({ "lorem-ipsum": "---\ntitle: Lorem\n---\n\nIpsum\n", "lorem-draft": "---\ntitle: Draft\ndraft: true\n---\n\nIpsum\n" });
+  const site = await makeSite({
+    "lorem-ipsum": "---\ntitle: Lorem\n---\n\nIpsum\n",
+    "lorem-draft": "---\ntitle: Draft\ndraft: true\n---\n\nIpsum\n",
+    "lorem-moving": "---\nsection: one\n---\n\nIpsum\n",
+  });
   ({ dir: siteDir, catalog } = site);
   eleventy = await startEleventy(siteDir);
   server = await startServer({ host: "127.0.0.1", port: 0, catalog, eleventy });
@@ -104,6 +108,21 @@ test("the preview shows a draft Post with the site layout, and the site's live r
   await expect.poll(() => preview.textContent(), { timeout: 10_000 }).toBe("Ipsum");
   await typeAtEnd(page, " dolor");
   await expect.poll(() => preview.textContent(), { timeout: 10_000 }).toBe("Ipsum dolor");
+  await page.close();
+}, 30_000);
+
+test("the preview follows the Post when an edit moves its page", async () => {
+  const { port } = server.address() as AddressInfo;
+  const page = await browser.newPage();
+  await page.goto(`http://127.0.0.1:${port}/p/lorem-moving`);
+  const preview = page.locator("#preview");
+  await expect.poll(() => preview.evaluate((frame: HTMLIFrameElement) => frame.contentWindow?.location.pathname), { timeout: 10_000 }).toBe("/blog/one/lorem-moving/");
+
+  await page.locator("#editor .front-matter").click();
+  await page.keyboard.press("End");
+  await page.keyboard.type("s");
+  await expect.poll(() => preview.evaluate((frame: HTMLIFrameElement) => frame.contentWindow?.location.pathname), { timeout: 10_000 }).toBe("/blog/ones/lorem-moving/");
+  await expect.poll(() => page.frameLocator("#preview").locator(".site-layout p").textContent(), { timeout: 5000 }).toBe("Ipsum");
   await page.close();
 }, 30_000);
 

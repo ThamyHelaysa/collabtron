@@ -19,8 +19,19 @@ const yamlWarning = document.querySelector<HTMLElement>("#yaml-warning")!;
 const saveWarning = document.querySelector<HTMLElement>("#save-warning")!;
 const recovery = document.querySelector<HTMLElement>("#recovery")!;
 // The site's own page for the Post, through the Server; its live reload refreshes it after each save (ADR 0009).
-// shortcut: stays on the page it opened, so a Post whose URL moves needs a reload; send the URL with each build to follow it.
-document.querySelector<HTMLIFrameElement>("#preview")!.src = `/preview/${encodeURIComponent(postId)}`;
+let preview = document.querySelector<HTMLIFrameElement>("#preview")!;
+preview.src = `/preview/${encodeURIComponent(postId)}`;
+// The Server sends the Post's URL after each build: an edit can move the page, as its permalink may follow its front matter.
+// A page of the site the Collaborator went to in the preview is left for the Post's own.
+const followPage = (url: string) => {
+  const page = new URL(url, location.href);
+  if (preview.contentWindow?.location.pathname === page.pathname) return;
+  // A new frame, not a new src: the old page's live reload, which can arrive after this, would reload the old page over it.
+  const next = preview.cloneNode() as HTMLIFrameElement;
+  next.src = page.href;
+  preview.replaceWith(next);
+  preview = next;
+};
 
 const showYamlWarning = (state: EditorState) => {
   const error = frontMatterError(state.doc);
@@ -107,6 +118,7 @@ const { push } = syncWithAuthority({
     // The Server reports every save it makes for this Post, and one that failed to whoever joins after.
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
+      if (message.type === "preview") return followPage(message.url);
       if (message.type !== "save") return;
       saveWarning.hidden = !message.error;
       saveWarning.textContent = message.error ?? "";

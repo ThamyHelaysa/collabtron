@@ -13,6 +13,7 @@ export type LauncherMessage = { type: "ready"; url: string } | { type: "contentM
 // Resolves once it serves, before the first build is done: until a build works, `pageUrl` knows no Post.
 export function startEleventy(siteDir: string) {
   let inputPathToUrl: Record<string, string[]> = {};
+  const builtListeners = new Set<() => void>();
   let child: ChildProcess;
   let closed = false;
   const eleventy = {
@@ -21,6 +22,8 @@ export function startEleventy(siteDir: string) {
     // Eleventy's keys are relative to the site, with `./` and `/`.
     // shortcut: no pathPrefix in front of the URL; add Eleventy's when a site sets one.
     pageUrl: (file: string): string | undefined => inputPathToUrl[`./${relative(siteDir, file).split(sep).join("/")}`]?.[0],
+    // After every build that worked: a page can move, as a permalink may follow front matter.
+    onBuild: (listener: () => void) => void builtListeners.add(listener),
     async close() {
       closed = true;
       if (child.exitCode !== null || child.signalCode !== null) return;
@@ -46,7 +49,10 @@ export function startEleventy(siteDir: string) {
         reject(error);
       });
       child.on("message", (message: LauncherMessage) => {
-        if (message.type === "contentMap") inputPathToUrl = message.inputPathToUrl;
+        if (message.type === "contentMap") {
+          inputPathToUrl = message.inputPathToUrl;
+          for (const listener of builtListeners) listener();
+        }
         if (message.type !== "ready") return;
         eleventy.url = message.url;
         resolve(eleventy);

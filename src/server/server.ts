@@ -90,7 +90,7 @@ export async function startServer({
   catalog: PostCatalog;
   // The site's own Eleventy dev server: every path the editor does not use is proxied to `url`,
   // and `page` says where it put a Post file (ADR 0009).
-  eleventy?: { url: string; pageUrl(file: string): string | undefined };
+  eleventy?: { url: string; pageUrl(file: string): string | undefined; onBuild(listener: () => void): void };
   heartbeatMs?: number;
   saveAfterMs?: number;
   saveEveryMs?: number;
@@ -101,6 +101,17 @@ export async function startServer({
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxMessage });
   // Tells the others whose Presence a message is.
   let nextSocketId = 0;
+
+  // Each build can move a Post's page: every Collaborator's preview follows it (ADR 0009).
+  if (eleventy) {
+    const { pageUrl } = eleventy;
+    eleventy.onBuild(() => {
+      for (const [id, entry] of editingSessions) {
+        const url = pageUrl(catalog.get(id)!.file);
+        if (url) void entry.then(({ sockets }) => sockets.forEach((socket) => socket.send(JSON.stringify({ type: "preview", url }))), () => {});
+      }
+    });
+  }
 
   function editingSessionFor(post: Post) {
     let session = editingSessions.get(post.id);

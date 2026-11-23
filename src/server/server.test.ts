@@ -33,6 +33,7 @@ beforeEach(async () => {
       url: `http://127.0.0.1:${(eleventy.address() as AddressInfo).port}`,
       // Where the site put each Post, as Eleventy's content map says.
       pageUrl: (file) => (file === join(postsDir, "lorem-ipsum", "index.md") ? "/blog/2026/lorem-ipsum/" : undefined),
+      onBuild: () => {},
     },
   });
   close = server.close;
