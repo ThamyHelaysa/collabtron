@@ -66,6 +66,10 @@ _Avoid_: change, operation, edit, delta
 The span during which the server has a Post loaded and collaborators can edit it together.
 _Avoid_: session (unqualified), room
 
+**Instance ID**:
+The random identifier of one Editing Session, sent to every tab that joins it. A tab coming back with the same one can resend its Steps; with another one, its Versions belong to an Authority that is gone.
+_Avoid_: session ID, server ID
+
 **Public Session**:
 The span during which the editor is reachable from the internet (router port open, public mode on). An Editing Session can run without a Public Session (local development), never the reverse in practice.
 _Avoid_: session (unqualified), live mode

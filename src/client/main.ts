@@ -1,4 +1,5 @@
 import { collab } from "prosemirror-collab";
+import type { Node } from "prosemirror-model";
 import { baseKeymap, setBlockType, toggleMark } from "prosemirror-commands";
 import { history, redo, undo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
@@ -16,6 +17,7 @@ const postId = decodeURIComponent(location.pathname.split("/")[2]);
 const status = document.querySelector<HTMLElement>("#status")!;
 const yamlWarning = document.querySelector<HTMLElement>("#yaml-warning")!;
 const saveWarning = document.querySelector<HTMLElement>("#save-warning")!;
+const recovery = document.querySelector<HTMLElement>("#recovery")!;
 
 const showYamlWarning = (state: EditorState) => {
   const error = frontMatterError(state.doc);
@@ -76,42 +78,73 @@ if (!(color >= 0 && color < colors.length)) {
   localStorage.setItem("collabtron.color", String(color));
 }
 
+// What this tab typed and the Server could no longer take, shown read-only to copy from: copying keeps the formatting.
+let recovered: EditorView | undefined;
+const recover = (doc: Node) => {
+  recovered?.destroy();
+  recovered = new EditorView(recovery.querySelector(".recovered"), { state: EditorState.create({ doc }), editable: () => false, nodeViews: shortcodeViews });
+  recovery.hidden = false;
+};
+recovery.querySelector("button")!.onclick = () => {
+  recovery.hidden = true;
+  recovered?.destroy();
+};
+
 let view: EditorView | undefined;
-const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(postId)}`);
-const push = syncWithAuthority(socket, { name: name || "Anonymous", color }, (doc, version) => {
-  view = new EditorView(document.querySelector("#editor"), {
-    nodeViews: shortcodeViews,
-    dispatchTransaction(tr) {
-      view!.updateState(view!.state.apply(tr));
-      push();
-    },
-    state: EditorState.create({
-      doc,
-      plugins: [
-        // With collab, undo reverts only this Collaborator's Steps.
-        history(),
-        collab({ version }),
-        presence,
-        yamlCheck,
-        keepFrontMatter,
-        keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": ignoreSave, Enter: exitCaption }),
-        keymap(baseKeymap),
-      ],
-    }),
-  });
-  return view;
-});
-// The Server reports every save it makes for this Post, and one that failed to whoever joins after.
-socket.addEventListener("message", (event) => {
-  const message = JSON.parse(event.data);
-  if (message.type !== "save") return;
-  saveWarning.hidden = !message.error;
-  saveWarning.textContent = message.error ?? "";
-  if (!message.error) status.textContent = `Saved at ${new Date().toLocaleTimeString()}`;
-});
-// No reconnect yet: after this, edits stay in this tab only.
-socket.addEventListener("close", (event) => {
-  status.textContent = view ? "Disconnected: reload to keep editing together" : `Could not open Post${event.reason ? `: ${event.reason}` : ""}`;
+// Per tab: two tabs on the same Post must not take each other's Steps. It still holds them across a reload (ADR 0008).
+const storageKey = `collabtron.post.${postId}`;
+const { push } = syncWithAuthority({
+  connect() {
+    const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(postId)}`);
+    socket.addEventListener("open", () => {
+      status.textContent = "Connected";
+      // The Server tells a Collaborator who joins whether saving is failing.
+      saveWarning.hidden = true;
+    });
+    // The Server reports every save it makes for this Post, and one that failed to whoever joins after.
+    socket.addEventListener("message", (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type !== "save") return;
+      saveWarning.hidden = !message.error;
+      saveWarning.textContent = message.error ?? "";
+      if (!message.error) status.textContent = `Saved at ${new Date().toLocaleTimeString()}`;
+    });
+    socket.addEventListener("close", (event) => {
+      status.textContent = !event.wasClean
+        ? "Disconnected: reconnecting, what you type is kept in this tab"
+        : view
+          ? "Disconnected: reload to keep editing together"
+          : `Could not open Post${event.reason ? `: ${event.reason}` : ""}`;
+    });
+    return socket;
+  },
+  me: { name: name || "Anonymous", color },
+  store: { load: () => sessionStorage.getItem(storageKey), save: (value) => sessionStorage.setItem(storageKey, value) },
+  open(doc, version, clientID) {
+    view?.destroy();
+    view = new EditorView(document.querySelector("#editor"), {
+      nodeViews: shortcodeViews,
+      dispatchTransaction(tr) {
+        view!.updateState(view!.state.apply(tr));
+        push();
+      },
+      state: EditorState.create({
+        doc,
+        plugins: [
+          // With collab, undo reverts only this Collaborator's Steps.
+          history(),
+          collab({ version, clientID }),
+          presence,
+          yamlCheck,
+          keepFrontMatter,
+          keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": ignoreSave, Enter: exitCaption }),
+          keymap(baseKeymap),
+        ],
+      }),
+    });
+    return view;
+  },
+  recover,
 });
 
 const toolbar = document.querySelector("#toolbar")!;
