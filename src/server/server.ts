@@ -1,6 +1,7 @@
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { pipeline, type Duplex } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import { colors, displayName } from "../shared/collaborator.ts";
@@ -19,6 +20,9 @@ const page = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>collabtron</title>
   <style>
+    body { margin: 0; }
+    #layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1em; padding: 0 1em; }
+    #preview { position: sticky; top: 0; width: 100%; height: 100vh; border: 0; border-left: 1px solid #ccc; }
     .ProseMirror { white-space: pre-wrap; word-wrap: break-word; outline: none; min-height: 50vh; }
     .raw-block, .raw-inline { font-family: monospace; background: #eee; color: #555; cursor: grab; }
     .raw-block { white-space: pre-wrap; padding: .5em; }
@@ -45,6 +49,8 @@ const page = `<!doctype html>
   </style>
 </head>
 <body>
+<div id="layout">
+<div>
   <div id="toolbar" role="toolbar" aria-label="Formatting"></div>
   <output id="status"></output>
   <div id="yaml-warning" role="alert" hidden></div>
@@ -55,6 +61,9 @@ const page = `<!doctype html>
     <button type="button">Dismiss</button>
   </section>
   <div id="editor"></div>
+</div>
+  <iframe id="preview" title="The Post with the site layout"></iframe>
+</div>
   <script type="module" src="/main.js"></script>
 </body>
 </html>
@@ -74,10 +83,14 @@ export async function startServer({
   heartbeatMs = 30_000,
   saveAfterMs = 1000,
   saveEveryMs = 10_000,
+  eleventy,
 }: {
   host: string;
   port: number;
   catalog: PostCatalog;
+  // The site's own Eleventy dev server: every path the editor does not use is proxied to `url`,
+  // and `page` says where it put a Post file (ADR 0009).
+  eleventy?: { url: string; pageUrl(file: string): string | undefined; onBuild(listener: () => void): void };
   heartbeatMs?: number;
   saveAfterMs?: number;
   saveEveryMs?: number;
@@ -88,6 +101,19 @@ export async function startServer({
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxMessage });
   // Tells the others whose Presence a message is.
   let nextSocketId = 0;
+  // The site's live reload sockets: closing the Server waits for every socket it upgraded, so it closes these too.
+  const siteSockets = new Set<Duplex>();
+
+  // Each build can move a Post's page: every Collaborator's preview follows it (ADR 0009).
+  if (eleventy) {
+    const { pageUrl } = eleventy;
+    eleventy.onBuild(() => {
+      for (const [id, entry] of editingSessions) {
+        const url = pageUrl(catalog.get(id)!.file);
+        if (url) void entry.then(({ sockets }) => sockets.forEach((socket) => socket.send(JSON.stringify({ type: "preview", url }))), () => {});
+      }
+    });
+  }
 
   function editingSessionFor(post: Post) {
     let session = editingSessions.get(post.id);
@@ -211,7 +237,7 @@ export async function startServer({
   });
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
-    const route = req.url?.match(/^\/(p|api\/posts)\/([^/?#]+)$/);
+    const route = req.url?.match(/^\/(p|api\/posts|preview)\/([^/?#]+)$/);
     if (route) {
       const post = catalog.get(route[2]);
       if (!post) {
@@ -222,6 +248,12 @@ export async function startServer({
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
       } else if (route[1] === "api/posts" && req.method === "GET") {
         res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" }).end(await readPost(post));
+      } else if (route[1] === "preview" && req.method === "GET") {
+        const pageUrl = eleventy?.pageUrl(post.file);
+        // A header takes ASCII only; a permalink need not be.
+        if (pageUrl) res.writeHead(302, { location: encodeURI(pageUrl) }).end();
+        // Until the site's first build that worked: the preview asks again on its own.
+        else res.writeHead(503, { "content-type": "text/plain; charset=utf-8", refresh: "2" }).end("The site has no page for this Post yet. Its build may still be running, or have failed (the terminal says why), or the site may not render this Post while serving. This retries on its own.");
       } else {
         res.writeHead(405).end();
       }
@@ -237,15 +269,41 @@ export async function startServer({
       }
       return;
     }
-    res.writeHead(404).end();
+    if (!eleventy) {
+      res.writeHead(404).end();
+      return;
+    }
+    // At the root, not under a prefix: the site's pages use absolute URLs.
+    const site = request(new URL(req.url!, eleventy.url), { method: req.method, headers: req.headers }, (answer) => {
+      res.writeHead(answer.statusCode!, answer.headers);
+      // Either side closing early closes the other: a reset page ends, a closed tab frees the dev server.
+      pipeline(answer, res, () => {});
+    });
+    site.on("error", (err) => {
+      if (res.headersSent) return void res.destroy();
+      res.writeHead(502, { "content-type": "text/plain; charset=utf-8" }).end(`The site's Eleventy dev server did not answer: ${err.message}`);
+    });
+    req.pipe(site);
   }
 
   server.on("upgrade", (req, socket, head) => {
-    const post = catalog.get(req.url?.match(/^\/ws\/([^/?#]+)$/)?.[1] ?? "");
     // Browsers do not stop another site's page from opening a WebSocket here; with no auth yet, the Origin check does.
+    // It covers the site's live reload socket too, so the preview is no side door (ADR 0009).
     const origin = req.headers.origin;
-    if (!post || (origin !== undefined && origin !== `http://${req.headers.host}`)) {
-      socket.end(`HTTP/1.1 ${post ? "403 Forbidden" : "404 Not Found"}\r\n\r\n`);
+    if (origin !== undefined && origin !== `http://${req.headers.host}`) {
+      socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+      return;
+    }
+    if (!req.url?.startsWith("/ws/")) {
+      if (!eleventy) return void socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
+      siteSockets.add(socket);
+      socket.once("close", () => siteSockets.delete(socket));
+      proxyUpgrade(eleventy.url, req, socket, head);
+      return;
+    }
+    const post = catalog.get(req.url.match(/^\/ws\/([^/?#]+)$/)?.[1] ?? "");
+    if (!post) {
+      socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => void join(ws, post));
@@ -261,6 +319,7 @@ export async function startServer({
     close: async () => {
       clearInterval(heartbeat);
       for (const socket of wss.clients) socket.terminate();
+      for (const socket of siteSockets) socket.destroy();
       await Promise.all([...editingSessions.values()].map((session) => session.then(({ saver }) => saver.flush(), () => {})));
       const closed = new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
       // A browser keeps idle and preconnected sockets open; waiting for them would stall Ctrl-C and `node --watch` restarts.
@@ -268,4 +327,27 @@ export async function startServer({
       return closed;
     },
   };
+}
+
+// The site's live reload socket: Eleventy's reload client opens it at ws://<the page's host>/, so here.
+function proxyUpgrade(siteUrl: string, req: IncomingMessage, socket: Duplex, head: Buffer) {
+  // A tab closing resets its socket: routine, and each end closes the other below.
+  socket.on("error", () => {});
+  const site = request(new URL(req.url!, siteUrl), { headers: req.headers });
+  socket.on("close", () => site.destroy());
+  site.on("upgrade", (answer, siteSocket, siteHead) => {
+    siteSocket.on("error", () => {}).on("close", () => socket.destroy());
+    socket.on("close", () => siteSocket.destroy());
+    const headers = answer.rawHeaders.flatMap((name, i) => (i % 2 ? [] : [`${name}: ${answer.rawHeaders[i + 1]}`]));
+    socket.write(["HTTP/1.1 101 Switching Protocols", ...headers, "", ""].join("\r\n"));
+    socket.write(siteHead);
+    siteSocket.write(head);
+    siteSocket.pipe(socket).pipe(siteSocket);
+  });
+  site.on("response", (answer) => {
+    answer.resume();
+    socket.end(`HTTP/1.1 ${answer.statusCode} ${answer.statusMessage}\r\n\r\n`);
+  });
+  site.on("error", () => socket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"));
+  site.end();
 }
