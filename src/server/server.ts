@@ -101,6 +101,8 @@ export async function startServer({
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxMessage });
   // Tells the others whose Presence a message is.
   let nextSocketId = 0;
+  // The site's live reload sockets: closing the Server waits for every socket it upgraded, so it closes these too.
+  const siteSockets = new Set<Duplex>();
 
   // Each build can move a Post's page: every Collaborator's preview follows it (ADR 0009).
   if (eleventy) {
@@ -293,8 +295,10 @@ export async function startServer({
       return;
     }
     if (!req.url?.startsWith("/ws/")) {
-      if (eleventy) proxyUpgrade(eleventy.url, req, socket, head);
-      else socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
+      if (!eleventy) return void socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
+      siteSockets.add(socket);
+      socket.once("close", () => siteSockets.delete(socket));
+      proxyUpgrade(eleventy.url, req, socket, head);
       return;
     }
     const post = catalog.get(req.url.match(/^\/ws\/([^/?#]+)$/)?.[1] ?? "");
@@ -315,6 +319,7 @@ export async function startServer({
     close: async () => {
       clearInterval(heartbeat);
       for (const socket of wss.clients) socket.terminate();
+      for (const socket of siteSockets) socket.destroy();
       await Promise.all([...editingSessions.values()].map((session) => session.then(({ saver }) => saver.flush(), () => {})));
       const closed = new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
       // A browser keeps idle and preconnected sockets open; waiting for them would stall Ctrl-C and `node --watch` restarts.

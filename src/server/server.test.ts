@@ -116,3 +116,15 @@ test("the preview of a Post opens its page wherever the site put it, and only fo
   expect(res.headers.get("location")).toBe("/blog/2026/lorem-ipsum/");
   expect((await fetch(`${base}/preview/other-post`, { redirect: "manual" })).status).toBe(404);
 });
+
+test("closing the Server closes the site's live reload sockets it proxies", async () => {
+  const socket = new WebSocket(base.replace("http:", "ws:") + "/", { headers: { origin: base } } as never);
+  await new Promise((resolve) => (socket.onmessage = resolve));
+  const closed = new Promise((resolve) => (socket.onclose = resolve));
+
+  const started = Date.now();
+  await close!();
+  close = undefined;
+  await closed;
+  expect(Date.now() - started).toBeLessThan(1000);
+}, 10_000);
