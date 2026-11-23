@@ -5,15 +5,15 @@ import { keymap } from "prosemirror-keymap";
 import { wrapInList } from "prosemirror-schema-list";
 import { EditorState, Plugin, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
-import { frontMatterError, schema, serialize } from "../shared/markdown.ts";
+import { frontMatterError, schema } from "../shared/markdown.ts";
 import { keepFrontMatter } from "./front-matter.ts";
 import { syncWithAuthority } from "./sync.ts";
 import { exitCaption, insertDetails, insertImageContainer, insertVideoContainer, setQuoteVariant, shortcodeViews } from "./shortcode-blocks.ts";
 
 const postId = decodeURIComponent(location.pathname.split("/")[2]);
-const api = `/api/posts/${encodeURIComponent(postId)}`;
 const status = document.querySelector<HTMLElement>("#status")!;
 const yamlWarning = document.querySelector<HTMLElement>("#yaml-warning")!;
+const saveWarning = document.querySelector<HTMLElement>("#save-warning")!;
 
 const showYamlWarning = (state: EditorState) => {
   const error = frontMatterError(state.doc);
@@ -33,15 +33,6 @@ const toggleLink: Command = (state, dispatch) => {
   if (state.doc.rangeHasMark(state.selection.from, state.selection.to, link)) return toggleMark(link)(state, dispatch);
   const href = prompt("Link URL");
   return href ? toggleMark(link, { href })(state, dispatch) : false;
-};
-
-const save: Command = (state) => {
-  status.textContent = "Saving…";
-  fetch(api, { method: "PUT", body: serialize(state.doc) }).then(
-    (res) => (status.textContent = res.ok ? "Saved" : `Save failed (${res.status})`),
-    () => (status.textContent = "Save failed (offline)"),
-  );
-  return true;
 };
 
 const bold = toggleMark(schema.marks.strong);
@@ -64,8 +55,10 @@ const tools: [string, Command][] = [
   ["Details", insertDetails],
   ["Image", insertImageContainer],
   ["Video", insertVideoContainer],
-  ["Save", save],
 ];
+
+// The Server saves on its own (ADR 0006); this keeps Mod-s from opening the browser's Save dialog.
+const ignoreSave: Command = () => true;
 
 let view: EditorView | undefined;
 const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(postId)}`);
@@ -84,12 +77,20 @@ const push = syncWithAuthority(socket, (doc, version) => {
         collab({ version }),
         yamlCheck,
         keepFrontMatter,
-        keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": save, Enter: exitCaption }),
+        keymap({ "Mod-z": undo, "Shift-Mod-z": redo, "Mod-b": bold, "Mod-i": italic, "Mod-s": ignoreSave, Enter: exitCaption }),
         keymap(baseKeymap),
       ],
     }),
   });
   return view;
+});
+// The Server reports every save it makes for this Post, and one that failed to whoever joins after.
+socket.addEventListener("message", (event) => {
+  const message = JSON.parse(event.data);
+  if (message.type !== "save") return;
+  saveWarning.hidden = !message.error;
+  saveWarning.textContent = message.error ?? "";
+  if (!message.error) status.textContent = `Saved at ${new Date().toLocaleTimeString()}`;
 });
 // No reconnect yet: after this, edits stay in this tab only.
 socket.addEventListener("close", (event) => {

@@ -3,10 +3,11 @@ import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
-import { parse } from "../shared/markdown.ts";
+import { parse, serialize } from "../shared/markdown.ts";
 import { createAuthority, type Authority } from "./authority.ts";
 import type { Post, PostCatalog } from "./post-catalog.ts";
-import { readPost, writePost } from "./post-file.ts";
+import { readPost } from "./post-file.ts";
+import { createPostSaver, type PostSaver } from "./post-saver.ts";
 
 const clientDir = new URL("../../dist/client/", import.meta.url);
 
@@ -21,7 +22,7 @@ const page = `<!doctype html>
     .raw-block, .raw-inline { font-family: monospace; background: #eee; color: #555; cursor: grab; }
     .raw-block { white-space: pre-wrap; padding: .5em; }
     .front-matter { font-family: monospace; background: #f4f4f4; padding: .5em; white-space: pre-wrap; }
-    #yaml-warning { white-space: pre-wrap; font-family: monospace; color: #900; background: #fdeeee; border: 1px solid #d33; padding: .5em; }
+    #yaml-warning, #save-warning { white-space: pre-wrap; font-family: monospace; color: #900; background: #fdeeee; border: 1px solid #d33; padding: .5em; }
     .ProseMirror-selectednode { outline: 2px solid #48f; }
     .shortcode-block { margin: 1em 0; padding: .5em; border: 1px solid #ccc; border-radius: 4px; }
     .shortcode-block fieldset { display: grid; gap: .25em; border: 0; padding: 0; margin: 0; }
@@ -39,40 +40,58 @@ const page = `<!doctype html>
   <div id="toolbar" role="toolbar" aria-label="Formatting"></div>
   <output id="status"></output>
   <div id="yaml-warning" role="alert" hidden></div>
+  <div id="save-warning" role="alert" hidden></div>
   <div id="editor"></div>
   <script type="module" src="/main.js"></script>
 </body>
 </html>
 `;
 
-const maxBody = 4 * 1024 * 1024; // bytes
+const maxMessage = 4 * 1024 * 1024; // bytes
 
-async function readBody(req: IncomingMessage) {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > maxBody) throw new Error("body too large");
-    chunks.push(chunk);
-  }
-  // Decode once: a multi-byte character can straddle two chunks.
-  return Buffer.concat(chunks).toString("utf8");
-}
+type EditingSession = { authority: Authority; sockets: Set<WebSocket>; saver: PostSaver };
 
-type EditingSession = { authority: Authority; sockets: Set<WebSocket> };
-
-export async function startServer({ host, port, catalog, heartbeatMs = 30_000 }: { host: string; port: number; catalog: PostCatalog; heartbeatMs?: number }) {
+export async function startServer({
+  host,
+  port,
+  catalog,
+  heartbeatMs = 30_000,
+  saveAfterMs = 1000,
+  saveEveryMs = 10_000,
+}: {
+  host: string;
+  port: number;
+  catalog: PostCatalog;
+  heartbeatMs?: number;
+  saveAfterMs?: number;
+  saveEveryMs?: number;
+}) {
   // New on every start: tells clients their Versions belong to an Authority that is gone.
   const instance = randomUUID();
   // One Authority per open Post, loaded from the Post file when its first Collaborator joins.
   // Joining never waits between finding a loaded session here and entering it, so an ended one is never entered.
   const editingSessions = new Map<string, Promise<EditingSession>>();
-  const wss = new WebSocketServer({ noServer: true, maxPayload: maxBody });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: maxMessage });
 
   function editingSessionFor(post: Post) {
     let session = editingSessions.get(post.id);
     if (!session) {
-      session = readPost(post).then((markdown) => ({ authority: createAuthority(parse(markdown)), sockets: new Set<WebSocket>() }));
+      session = readPost(post).then((onDisk) => {
+        const authority = createAuthority(parse(onDisk));
+        const sockets = new Set<WebSocket>();
+        const saver = createPostSaver({
+          post,
+          onDisk,
+          markdown: () => serialize(authority.doc),
+          report(error) {
+            const message = JSON.stringify({ type: "save", error });
+            for (const socket of sockets) socket.send(message);
+          },
+          afterMs: saveAfterMs,
+          everyMs: saveEveryMs,
+        });
+        return { authority, sockets, saver };
+      });
       editingSessions.set(post.id, session);
       // A Post that failed to open is retried by the next Collaborator.
       session.catch(() => editingSessions.delete(post.id));
@@ -80,24 +99,36 @@ export async function startServer({ host, port, catalog, heartbeatMs = 30_000 }:
     return session;
   }
 
+  // The Editing Session ends with its last Collaborator, once what they typed is saved: the next one reads the Post file again.
+  // Whoever joins while it saves keeps it going; an earlier save may already have ended it and a new one taken its place.
+  function endIfEmpty(post: Post, entry: Promise<EditingSession>, { sockets, saver }: EditingSession) {
+    if (sockets.size) return;
+    void saver.flush().then(() => {
+      if (!sockets.size && editingSessions.get(post.id) === entry) editingSessions.delete(post.id);
+    });
+  }
+
   async function join(socket: WebSocket, post: Post) {
+    const entry = editingSessionFor(post);
     let session: EditingSession;
     try {
-      session = await editingSessionFor(post);
+      session = await entry;
     } catch (err) {
       console.error(err);
       socket.close(1011, "it has Markdown the editor cannot keep yet");
       return;
     }
-    if (socket.readyState !== socket.OPEN) return;
-    const { authority, sockets } = session;
+    // Left while the Post was loading: it may have been the only one.
+    if (socket.readyState !== socket.OPEN) return endIfEmpty(post, entry, session);
+    const { authority, sockets, saver } = session;
     sockets.add(socket);
     socket.on("close", () => {
       sockets.delete(socket);
-      // The Editing Session ends with its last Collaborator: the next one reads the Post file again.
-      if (!sockets.size) editingSessions.delete(post.id);
+      endIfEmpty(post, entry, session);
     });
     socket.send(JSON.stringify({ type: "init", instance, version: authority.version, doc: authority.doc.toJSON() }));
+    // A Collaborator who joins while saving fails is told at once.
+    if (saver.error) socket.send(JSON.stringify({ type: "save", error: saver.error }));
 
     socket.on("message", (data) => {
       try {
@@ -109,6 +140,7 @@ export async function startServer({ host, port, catalog, heartbeatMs = 30_000 }:
           const accepted = JSON.stringify(authority.stepsSince(message.version));
           // The sender too: that is how it learns its Steps are confirmed.
           for (const collaborator of sockets) collaborator.send(accepted);
+          saver.stepsAccepted();
         } else {
           socket.send(JSON.stringify(missing));
         }
@@ -143,16 +175,6 @@ export async function startServer({ host, port, catalog, heartbeatMs = 30_000 }:
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
       } else if (route[1] === "api/posts" && req.method === "GET") {
         res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" }).end(await readPost(post));
-      } else if (route[1] === "api/posts" && req.method === "PUT") {
-        let body: string;
-        try {
-          body = await readBody(req);
-        } catch {
-          res.writeHead(413, { connection: "close" }).end();
-          return;
-        }
-        await writePost(post, body);
-        res.writeHead(204).end();
       } else {
         res.writeHead(405).end();
       }
@@ -188,10 +210,15 @@ export async function startServer({ host, port, catalog, heartbeatMs = 30_000 }:
   });
   return {
     address: () => server.address(),
-    close: () => {
+    // Saves what every Editing Session has pending, so stopping the process after it loses nothing that was accepted.
+    close: async () => {
       clearInterval(heartbeat);
       for (const socket of wss.clients) socket.terminate();
-      return new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      await Promise.all([...editingSessions.values()].map((session) => session.then(({ saver }) => saver.flush(), () => {})));
+      const closed = new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      // A browser keeps idle and preconnected sockets open; waiting for them would stall Ctrl-C and `node --watch` restarts.
+      server.closeAllConnections();
+      return closed;
     },
   };
 }

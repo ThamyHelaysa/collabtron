@@ -17,5 +17,7 @@ const postId = process.argv[2];
 if (!postId) throw new Error("usage: pnpm dev <post-id>");
 const catalog = await createPostCatalog(postsDir, [postId]);
 
-await startServer({ host, port, catalog });
+const server = await startServer({ host, port, catalog });
 console.log(`collabtron dev server on http://${host}:${port}/p/${postId}`);
+// Ctrl-C and `node --watch` restarts: save what is pending before the process stops.
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => void server.close().finally(() => process.exit()));
