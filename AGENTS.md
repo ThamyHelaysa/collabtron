@@ -37,7 +37,7 @@ Before reporting: run `typecheck` and `test`, say which commands you could not r
 
 ## Git
 
-- Branch off `main`, one branch per issue (`issue-<n>-<slug>`). Never push to `main`.
+- Branch off `origin/main`, fetched first (local `main` lags), one branch per issue (`issue-<n>-<slug>`). Never push to `main`.
 - Conventional commits: `<type>(<scope>)?: <description>`, enforced by `.githooks/commit-msg`.
 - PR body says `Closes #<n>`.
 
