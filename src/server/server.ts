@@ -2,7 +2,7 @@ import { createServer, request } from "node:http";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipeline, type Duplex } from "node:stream";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import { colors, displayName } from "../shared/collaborator.ts";
 import { parse, serialize } from "../shared/markdown.ts";
@@ -71,6 +71,13 @@ const page = `<!doctype html>
 
 const maxMessage = 4 * 1024 * 1024; // bytes
 
+// In constant time, so how long a refusal takes tells nothing of the secret.
+function isSecret(value: unknown, secret: string) {
+  const given = Buffer.from(typeof value === "string" ? value : "");
+  const expected = Buffer.from(secret);
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+
 // Where one Collaborator's cursor and selection are, at `version`.
 type Presence = { id: number; name: string; color: number; version: number; anchor: number; head: number };
 // Presence is kept per socket, beside the Authority: it never enters the Step log (ADR 0007).
@@ -95,6 +102,11 @@ export async function startServer({
   saveAfterMs?: number;
   saveEveryMs?: number;
 }) {
+  // The Share Link's secret, new at every start: a link from before stops working (ADR 0010).
+  const token = randomBytes(32).toString("base64url");
+  // The preview's cookie: a secret of its own, so the token never travels with the site's pages.
+  const previewKey = randomBytes(32).toString("base64url");
+  const hasPreviewCookie = (req: IncomingMessage) => isSecret(req.headers.cookie?.match(/(?:^|;\s*)collabtron=([^;]*)/)?.[1], previewKey);
   // One Authority per open Post, loaded from the Post file when its first Collaborator joins.
   // Joining never waits between finding a loaded session here and entering it, so an ended one is never entered.
   const editingSessions = new Map<string, Promise<EditingSession>>();
@@ -237,7 +249,19 @@ export async function startServer({
   });
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
-    const route = req.url?.match(/^\/(p|api\/posts|preview)\/([^/?#]+)$/);
+    if (req.url === "/api/auth") {
+      if (req.method !== "POST") res.writeHead(405).end();
+      // The editor page sends the token from its Share Link; the cookie opens the preview and the site's pages (ADR 0010).
+      else if (!isSecret(req.headers.authorization, `Bearer ${token}`)) res.writeHead(403).end("not this Server's Share Link");
+      else res.writeHead(204, { "set-cookie": `collabtron=${previewKey}; Path=/; HttpOnly; Secure; SameSite=Strict` }).end();
+      return;
+    }
+    const route = req.url?.match(/^\/(p|preview)\/([^/?#]+)$/);
+    // The editor page and its script hold nothing of the Post: the Share Link's token, in the fragment, is for the page alone.
+    if (route?.[1] !== "p" && req.url !== "/main.js" && !hasPreviewCookie(req)) {
+      res.writeHead(403, { "content-type": "text/plain; charset=utf-8" }).end("Only for a Collaborator: open the Share Link.");
+      return;
+    }
     if (route) {
       const post = catalog.get(route[2]);
       if (!post) {
@@ -246,8 +270,6 @@ export async function startServer({
       }
       if (route[1] === "p" && req.method === "GET") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
-      } else if (route[1] === "api/posts" && req.method === "GET") {
-        res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" }).end(await readPost(post));
       } else if (route[1] === "preview" && req.method === "GET") {
         const pageUrl = eleventy?.pageUrl(post.file);
         // A header takes ASCII only; a permalink need not be.
@@ -287,15 +309,10 @@ export async function startServer({
   }
 
   server.on("upgrade", (req, socket, head) => {
-    // Browsers do not stop another site's page from opening a WebSocket here; with no auth yet, the Origin check does.
-    // It covers the site's live reload socket too, so the preview is no side door (ADR 0009).
-    const origin = req.headers.origin;
-    if (origin !== undefined && origin !== `http://${req.headers.host}`) {
-      socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
-      return;
-    }
     if (!req.url?.startsWith("/ws/")) {
       if (!eleventy) return void socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
+      // The site's live reload sends its pages as they build: the same cookie as the pages (ADR 0010).
+      if (!hasPreviewCookie(req)) return void socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
       siteSockets.add(socket);
       socket.once("close", () => siteSockets.delete(socket));
       proxyUpgrade(eleventy.url, req, socket, head);
@@ -306,7 +323,17 @@ export async function startServer({
       socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => void join(ws, post));
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      // The first message is the Share Link's token: before it, nothing of the Post is read or sent.
+      ws.once("message", (data) => {
+        let message;
+        try {
+          message = JSON.parse(data.toString());
+        } catch {}
+        if (message?.type === "auth" && isSecret(message.token, token)) void join(ws, post);
+        else ws.close(4003, "not this Server's Share Link");
+      });
+    });
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -315,6 +342,7 @@ export async function startServer({
   });
   return {
     address: () => server.address(),
+    token,
     // Saves what every Editing Session has pending, so stopping the process after it loses nothing that was accepted.
     close: async () => {
       clearInterval(heartbeat);

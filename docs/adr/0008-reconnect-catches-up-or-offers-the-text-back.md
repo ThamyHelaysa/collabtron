@@ -1,8 +1,8 @@
 # Reconnect catches up on the same Authority, or offers the text back
 
-A dropped connection or a stopped Server must not lose a Collaborator's text (issue #13). The client (`src/client/sync.ts`) opens a new socket 1 s after one closes without a closing handshake: a network drop, a stopped Server, a refused connection. It does not when the Server closed it on purpose (an invalid message, a Post file it cannot read): trying again would get the same answer. A refused upgrade is tried again: a Server started for another Post may be started for this one again, and the tab keeps its text meanwhile.
+A dropped connection or a stopped Server must not lose a Collaborator's text (issue #13). The client (`src/client/sync.ts`) opens a new socket 1 s after one closes without a closing handshake: a network drop, a stopped Server, a refused connection. It does not when the Server closed it on purpose (an invalid message, a Post file it cannot read, the token of an earlier Server start): trying again would get the same answer. A refused upgrade is tried again: a Server started for another Post may be started for this one again, and the tab keeps its text meanwhile.
 
-`init` carries the instance ID of the Editing Session, not of the Server process. An Authority, Step log included, is dropped when its last Collaborator leaves ([ADR 0005](0005-one-steps-message.md)), so a Version only means something within one Editing Session. A Server start gives every Editing Session a new ID too.
+`init` carries the instance ID of the Editing Session, not of the Server process. An Authority, Step log included, is dropped when its last Collaborator leaves ([ADR 0005](0005-one-steps-message.md)), so a Version only means something within one Editing Session. A Server start gives every Editing Session a new ID too, and a new token: a tab open across a restart is refused until its Collaborator opens the new Share Link in it ([ADR 0010](0010-token-opens-the-socket-a-cookie-the-preview.md)).
 
 On `init`, the client compares what it has with the Authority:
 
