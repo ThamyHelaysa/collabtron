@@ -19,6 +19,7 @@ pnpm via corepack (`packageManager` in `package.json`, ADR 0002). Never `npm` or
 ```bash
 corepack pnpm install
 corepack pnpm dev <post-id>   # needs .env, copy from .env.example
+corepack pnpm dev:fixture     # by hand, no .env: a temp Eleventy site, prints the Share Link
 corepack pnpm typecheck
 corepack pnpm test
 ```
