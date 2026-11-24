@@ -262,7 +262,8 @@ export async function startServer({
     const route = req.url?.match(/^\/(p|preview)\/([^/?#]+)$/);
     // The editor page and its script hold nothing of the Post: the Share Link's token, in the fragment, is for the page alone.
     if (route?.[1] !== "p" && req.url !== "/main.js" && !hasPreviewCookie(req)) {
-      res.writeHead(403, { "content-type": "text/plain; charset=utf-8" }).end("Only for a Collaborator: open the Share Link.");
+      // Seen in the preview only when the browser dropped the cookie: Safari keeps no `Secure` cookie over plain HTTP (ADR 0010).
+      res.writeHead(403, { "content-type": "text/plain; charset=utf-8" }).end("Only for a Collaborator: open the Share Link. Opened it already? This browser kept no cookie for the preview: over plain HTTP (dev mode), Safari keeps none, Chrome does.");
       return;
     }
     if (route) {
