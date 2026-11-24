@@ -116,14 +116,15 @@ const storageKey = `collabtron.post.${postId}`;
 const { push } = syncWithAuthority({
   connect() {
     const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(postId)}`);
-    socket.addEventListener("open", () => {
-      status.textContent = "Connected";
-      // The Server tells a Collaborator who joins whether saving is failing.
-      saveWarning.hidden = true;
-    });
     // The Server reports every save it makes for this Post, and one that failed to whoever joins after.
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
+      // Sent once the token is accepted: an open socket can still be refused.
+      if (message.type === "init") {
+        status.textContent = "Connected";
+        // The Server tells a Collaborator who joins whether saving is failing.
+        saveWarning.hidden = true;
+      }
       if (message.type === "preview") return void previewAllowed.then((ok) => ok && followPage(message.url));
       if (message.type !== "save") return;
       saveWarning.hidden = !message.error;

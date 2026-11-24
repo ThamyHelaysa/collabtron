@@ -72,7 +72,7 @@ const page = `<!doctype html>
 const maxMessage = 4 * 1024 * 1024; // bytes
 
 // In constant time, so how long a refusal takes tells nothing of the secret.
-function isSecret(value: unknown, secret: string) {
+function matchesSecret(value: unknown, secret: string) {
   const given = Buffer.from(typeof value === "string" ? value : "");
   const expected = Buffer.from(secret);
   return given.length === expected.length && timingSafeEqual(given, expected);
@@ -90,6 +90,7 @@ export async function startServer({
   heartbeatMs = 30_000,
   saveAfterMs = 1000,
   saveEveryMs = 10_000,
+  authWithinMs = 10_000,
   eleventy,
 }: {
   host: string;
@@ -101,12 +102,13 @@ export async function startServer({
   heartbeatMs?: number;
   saveAfterMs?: number;
   saveEveryMs?: number;
+  authWithinMs?: number;
 }) {
   // The Share Link's secret, new at every start: a link from before stops working (ADR 0010).
   const token = randomBytes(32).toString("base64url");
   // The preview's cookie: a secret of its own, so the token never travels with the site's pages.
   const previewKey = randomBytes(32).toString("base64url");
-  const hasPreviewCookie = (req: IncomingMessage) => isSecret(req.headers.cookie?.match(/(?:^|;\s*)collabtron=([^;]*)/)?.[1], previewKey);
+  const hasPreviewCookie = (req: IncomingMessage) => matchesSecret(req.headers.cookie?.match(/(?:^|;\s*)__Host-collabtron=([^;]*)/)?.[1], previewKey);
   // One Authority per open Post, loaded from the Post file when its first Collaborator joins.
   // Joining never waits between finding a loaded session here and entering it, so an ended one is never entered.
   const editingSessions = new Map<string, Promise<EditingSession>>();
@@ -252,8 +254,9 @@ export async function startServer({
     if (req.url === "/api/auth") {
       if (req.method !== "POST") res.writeHead(405).end();
       // The editor page sends the token from its Share Link; the cookie opens the preview and the site's pages (ADR 0010).
-      else if (!isSecret(req.headers.authorization, `Bearer ${token}`)) res.writeHead(403).end("not this Server's Share Link");
-      else res.writeHead(204, { "set-cookie": `collabtron=${previewKey}; Path=/; HttpOnly; Secure; SameSite=Strict` }).end();
+      // `__Host-`: the browser refuses a cookie of that name set with another Path or a Domain, as a page on another port could.
+      else if (!matchesSecret(req.headers.authorization, `Bearer ${token}`)) res.writeHead(403).end("not this Server's Share Link");
+      else res.writeHead(204, { "set-cookie": `__Host-collabtron=${previewKey}; Path=/; HttpOnly; Secure; SameSite=Strict` }).end();
       return;
     }
     const route = req.url?.match(/^\/(p|preview)\/([^/?#]+)$/);
@@ -325,12 +328,15 @@ export async function startServer({
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       // The first message is the Share Link's token: before it, nothing of the Post is read or sent.
+      // Any page can open a socket here, so one that sends nothing is closed too.
+      const late = setTimeout(() => ws.close(4003, "not this Server's Share Link"), authWithinMs).unref();
       ws.once("message", (data) => {
+        clearTimeout(late);
         let message;
         try {
           message = JSON.parse(data.toString());
         } catch {}
-        if (message?.type === "auth" && isSecret(message.token, token)) void join(ws, post);
+        if (message?.type === "auth" && matchesSecret(message.token, token)) void join(ws, post);
         else ws.close(4003, "not this Server's Share Link");
       });
     });

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
@@ -100,13 +100,18 @@ test("the Share Link's token gets the preview's cookie, kept from the page's scr
 });
 
 test("the preview and every page of the site are refused without the cookie, the site's live reload socket too", async () => {
-  for (const headers of [{}, { cookie: "collabtron=wrong" }, { cookie: `collabtron=${token}` }] as Record<string, string>[]) {
+  for (const headers of [{}, { cookie: "__Host-collabtron=wrong" }, { cookie: `__Host-collabtron=${token}` }] as Record<string, string>[]) {
     expect((await fetch(`${base}/blog/2026/lorem-ipsum/`, { headers })).status).toBe(403);
     expect((await fetch(`${base}/preview/lorem-ipsum`, { headers, redirect: "manual" })).status).toBe(403);
     expect(await reloadSocket(headers)).toBeNull();
   }
   // The editor page itself holds nothing of the Post: the token is in the link's fragment, which only the page reads.
   expect((await fetch(`${base}/p/lorem-ipsum`)).status).toBe(200);
+});
+
+test("saving is the Server's alone: a tab cannot write the Post file", async () => {
+  await fetch(`${base}/api/posts/lorem-ipsum`, { ...withCookie(), method: "PUT", body: "x" });
+  expect(await readFile(join(postsDir, "lorem-ipsum", "index.md"), "utf8")).toBe(postFile);
 });
 
 test("a path the editor does not use is the site's own, from its Eleventy dev server", async () => {

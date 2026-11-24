@@ -23,7 +23,7 @@ const collaborators: { leave(): void }[] = [];
 
 async function start(options: Partial<Parameters<typeof startServer>[0]> = {}) {
   const catalog = await createPostCatalog(postsDir, ["lorem-ipsum"]);
-  server = await startServer({ host: "127.0.0.1", port: 0, catalog, heartbeatMs: 20, saveAfterMs: 20, saveEveryMs: 200, ...options });
+  server = await startServer({ host: "127.0.0.1", port: 0, catalog, heartbeatMs: 20, saveAfterMs: 20, saveEveryMs: 200, authWithinMs: 200, ...options });
   url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws/`;
 }
 
@@ -417,7 +417,8 @@ test("a Collaborator who closes the tab while the Server is down is offered what
 
 test("a socket must open with the Share Link's token: with another, or none, it is closed before anything of the Post is sent", async () => {
   const messages: string[] = [];
-  const refused = [open("lorem-ipsum", "x".repeat(server.token.length)), open("lorem-ipsum", "wrong"), open("lorem-ipsum", "é".repeat(server.token.length)), open("lorem-ipsum", null)];
+  // The last one sends nothing at all.
+  const refused = [open("lorem-ipsum", "x".repeat(server.token.length)), open("lorem-ipsum", "wrong"), open("lorem-ipsum", "é".repeat(server.token.length)), open("lorem-ipsum", null), open("lorem-ipsum", null)];
   refused[3].addEventListener("open", () => refused[3].send(JSON.stringify({ type: "catch-up", version: 0 })));
   for (const socket of refused) socket.addEventListener("message", (event) => messages.push(event.data));
 
