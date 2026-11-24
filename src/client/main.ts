@@ -14,13 +14,19 @@ import { syncWithAuthority } from "./sync.ts";
 import { exitCaption, insertDetails, insertImageContainer, insertVideoContainer, setQuoteVariant, shortcodeViews } from "./shortcode-blocks.ts";
 
 const postId = decodeURIComponent(location.pathname.split("/")[2]);
+// From the Share Link's fragment, which never reaches a server log; kept in the address bar so a reload still has it (ADR 0010).
+const token = new URLSearchParams(location.hash.slice(1)).get("token") ?? "";
+// A new Share Link pasted into this tab changes only the fragment: reload to use its token. The tab's storage stays (ADR 0008).
+addEventListener("hashchange", () => location.reload());
+// The cookie the preview and the site's pages need; a link with another token gets none, and no preview.
+const previewAllowed = fetch("/api/auth", { method: "POST", headers: { authorization: `Bearer ${token}` } }).then((res) => res.ok, () => false);
 const status = document.querySelector<HTMLElement>("#status")!;
 const yamlWarning = document.querySelector<HTMLElement>("#yaml-warning")!;
 const saveWarning = document.querySelector<HTMLElement>("#save-warning")!;
 const recovery = document.querySelector<HTMLElement>("#recovery")!;
 // The site's own page for the Post, through the Server; its live reload refreshes it after each save (ADR 0009).
 let preview = document.querySelector<HTMLIFrameElement>("#preview")!;
-preview.src = `/preview/${encodeURIComponent(postId)}`;
+void previewAllowed.then((ok) => ok && (preview.src = `/preview/${encodeURIComponent(postId)}`));
 // The Server sends the Post's URL after each build: an edit can move the page, as its permalink may follow its front matter.
 // A page of the site the Collaborator went to in the preview is left for the Post's own.
 const followPage = (url: string) => {
@@ -110,15 +116,16 @@ const storageKey = `collabtron.post.${postId}`;
 const { push } = syncWithAuthority({
   connect() {
     const socket = new WebSocket(`ws://${location.host}/ws/${encodeURIComponent(postId)}`);
-    socket.addEventListener("open", () => {
-      status.textContent = "Connected";
-      // The Server tells a Collaborator who joins whether saving is failing.
-      saveWarning.hidden = true;
-    });
     // The Server reports every save it makes for this Post, and one that failed to whoever joins after.
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
-      if (message.type === "preview") return followPage(message.url);
+      // Sent once the token is accepted: an open socket can still be refused.
+      if (message.type === "init") {
+        status.textContent = "Connected";
+        // The Server tells a Collaborator who joins whether saving is failing.
+        saveWarning.hidden = true;
+      }
+      if (message.type === "preview") return void previewAllowed.then((ok) => ok && followPage(message.url));
       if (message.type !== "save") return;
       saveWarning.hidden = !message.error;
       saveWarning.textContent = message.error ?? "";
@@ -127,12 +134,15 @@ const { push } = syncWithAuthority({
     socket.addEventListener("close", (event) => {
       status.textContent = !event.wasClean
         ? "Disconnected: reconnecting, what you type is kept in this tab"
-        : view
+        : event.code === 4003 // the Server's refusal of the token
+          ? "This link does not open the Post, the Server may have restarted: open its new Share Link in this tab, which keeps what you typed"
+          : view
           ? "Disconnected: reload to keep editing together"
           : `Could not open Post${event.reason ? `: ${event.reason}` : ""}`;
     });
     return socket;
   },
+  token,
   me: { name: name || "Anonymous", color },
   store: { load: () => sessionStorage.getItem(storageKey), save: (value) => sessionStorage.setItem(storageKey, value) },
   open(doc, version, clientID) {

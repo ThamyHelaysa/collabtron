@@ -12,6 +12,9 @@ const postFile = "---\ntitle: Lorem\n---\n\n# Ipsum\n\nDolor sit amet.\n";
 
 let postsDir: string;
 let base: string;
+let token: string;
+// The preview's cookie, as the editor page gets it with the Share Link's token.
+let cookie: string;
 let close: (() => Promise<void>) | undefined;
 // Stands in for the site's own `eleventy --serve`: answers every request with where it was asked.
 let eleventy: Server;
@@ -37,8 +40,19 @@ beforeEach(async () => {
     },
   });
   close = server.close;
+  token = server.token;
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  cookie = (await fetch(`${base}/api/auth`, { method: "POST", headers: { authorization: `Bearer ${token}` } })).headers.get("set-cookie")?.split(";")[0] ?? "";
 });
+
+const withCookie = () => ({ headers: { cookie } });
+// The site's live reload socket, through the Server: what it says first, or null if it is refused.
+const reloadSocket = (headers: Record<string, string>) =>
+  new Promise<unknown>((resolve) => {
+    const socket = new WebSocket(base.replace("http:", "ws:") + "/", { headers } as never);
+    socket.onmessage = (event) => (resolve(event.data), socket.close());
+    socket.onerror = () => resolve(null);
+  });
 
 afterEach(async () => {
   await close?.();
@@ -68,57 +82,60 @@ test("Post Catalog refuses a Post ID with no Post on disk", async () => {
 test("rejects Post IDs not in the Post Catalog, even ones that exist on disk", async () => {
   for (const id of ["other-post", "..%2Fother-post", "missing"]) {
     expect((await fetch(`${base}/p/${id}`)).status).toBe(404);
-    expect((await fetch(`${base}/api/posts/${id}`)).status).toBe(404);
+    expect((await fetch(`${base}/preview/${id}`, withCookie())).status).toBe(404);
   }
 });
 
-test("loads the whole Post file, front matter included", async () => {
-  const res = await fetch(`${base}/api/posts/lorem-ipsum`);
+test("the Share Link's token gets the preview's cookie, kept from the page's scripts and from other sites; another token gets none", async () => {
+  const res = await fetch(`${base}/api/auth`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
 
-  expect(res.status).toBe(200);
-  expect(await res.text()).toBe(postFile);
+  expect(res.status).toBe(204);
+  expect(res.headers.get("set-cookie")!.split("; ")).toEqual(expect.arrayContaining(["Path=/", "HttpOnly", "Secure", "SameSite=Strict"]));
+  expect(token).toMatch(/^[\w-]{43}$/); // 32 bytes
+  for (const authorization of ["Bearer wrong", `Bearer ${token}x`, `Bearer ${"é".repeat(43)}`, token, ""]) {
+    const refused = await fetch(`${base}/api/auth`, { method: "POST", headers: { authorization } });
+    expect(refused.status).toBe(403);
+    expect(refused.headers.get("set-cookie")).toBeNull();
+  }
+});
+
+test("the preview and every page of the site are refused without the cookie, the site's live reload socket too", async () => {
+  for (const headers of [{}, { cookie: "__Host-collabtron=wrong" }, { cookie: `__Host-collabtron=${token}` }] as Record<string, string>[]) {
+    expect((await fetch(`${base}/blog/2026/lorem-ipsum/`, { headers })).status).toBe(403);
+    expect((await fetch(`${base}/preview/lorem-ipsum`, { headers, redirect: "manual" })).status).toBe(403);
+    expect(await reloadSocket(headers)).toBeNull();
+  }
+  // The editor page itself holds nothing of the Post: the token is in the link's fragment, which only the page reads.
+  expect((await fetch(`${base}/p/lorem-ipsum`)).status).toBe(200);
 });
 
 test("saving is the Server's alone: a tab cannot write the Post file", async () => {
-  expect((await fetch(`${base}/api/posts/lorem-ipsum`, { method: "PUT", body: "x" })).status).toBe(405);
+  await fetch(`${base}/api/posts/lorem-ipsum`, { ...withCookie(), method: "PUT", body: "x" });
   expect(await readFile(join(postsDir, "lorem-ipsum", "index.md"), "utf8")).toBe(postFile);
 });
 
 test("a path the editor does not use is the site's own, from its Eleventy dev server", async () => {
-  const res = await fetch(`${base}/blog/2026/lorem-ipsum/?x=1`);
+  const res = await fetch(`${base}/blog/2026/lorem-ipsum/?x=1`, withCookie());
 
   expect(res.status).toBe(200);
   expect(res.headers.get("x-site")).toBe("yes");
   expect(await res.text()).toBe("site page GET /blog/2026/lorem-ipsum/?x=1");
 });
 
-test("the site's live reload socket reaches its Eleventy dev server, from the editor's own origin only", async () => {
-  const own = new WebSocket(base.replace("http:", "ws:") + "/", { headers: { origin: base } } as never);
-  const message = await new Promise((resolve, reject) => {
-    own.onmessage = (event) => resolve(event.data);
-    own.onerror = reject;
-  });
-  own.close();
-  expect(message).toBe("reload socket /");
-
-  const other = new WebSocket(base.replace("http:", "ws:") + "/", { headers: { origin: "http://evil.example" } } as never);
-  const opened = await new Promise((resolve) => {
-    other.onopen = () => resolve(true);
-    other.onerror = () => resolve(false);
-  });
-  expect(opened).toBe(false);
+test("the site's live reload socket reaches its Eleventy dev server", async () => {
+  expect(await reloadSocket({ cookie })).toBe("reload socket /");
 });
 
 test("the preview of a Post opens its page wherever the site put it, and only for a Post in the Post Catalog", async () => {
-  const res = await fetch(`${base}/preview/lorem-ipsum`, { redirect: "manual" });
+  const res = await fetch(`${base}/preview/lorem-ipsum`, { ...withCookie(), redirect: "manual" });
 
   expect(res.status).toBe(302);
   expect(res.headers.get("location")).toBe("/blog/2026/lorem-ipsum/");
-  expect((await fetch(`${base}/preview/other-post`, { redirect: "manual" })).status).toBe(404);
+  expect((await fetch(`${base}/preview/other-post`, { ...withCookie(), redirect: "manual" })).status).toBe(404);
 });
 
 test("closing the Server closes the site's live reload sockets it proxies", async () => {
-  const socket = new WebSocket(base.replace("http:", "ws:") + "/", { headers: { origin: base } } as never);
+  const socket = new WebSocket(base.replace("http:", "ws:") + "/", { headers: { cookie } } as never);
   await new Promise((resolve) => (socket.onmessage = resolve));
   const closed = new Promise((resolve) => (socket.onclose = resolve));
 

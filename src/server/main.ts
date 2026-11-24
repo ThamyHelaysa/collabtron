@@ -7,7 +7,7 @@ const mode = process.env.MODE ?? "dev";
 if (mode !== "dev") throw new Error(`MODE=${mode} not supported yet; only dev`);
 
 const host = process.env.HOST ?? "127.0.0.1";
-// No auth yet: dev must never be reachable from the network.
+// Plain HTTP: the token and the cookie would cross the network in clear text.
 if (!["127.0.0.1", "::1", "localhost"].includes(host)) throw new Error(`HOST=${host}: dev mode binds loopback only`);
 
 const port = Number(process.env.PORT || 8080);
@@ -28,6 +28,7 @@ const eleventy = await startEleventy(siteDir);
 // Eleventy Dev Server 2 has no host option (ADR 0009).
 console.warn(`The site's Eleventy dev server at ${eleventy.url} listens on every network interface: anyone on this network can read its pages, drafts included.`);
 const server = await startServer({ host, port, catalog, eleventy });
-console.log(`collabtron dev server on http://${host}:${port}/p/${postId}`);
+// New at every start: send it again to the Collaborators after a restart (ADR 0010).
+console.log(`Share Link: http://${host}:${port}/p/${postId}#token=${server.token}`);
 // Ctrl-C and `node --watch` restarts: save what is pending before the process stops.
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => void Promise.all([server.close(), eleventy.close()]).finally(() => process.exit()));

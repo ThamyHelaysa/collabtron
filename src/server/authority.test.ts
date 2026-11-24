@@ -23,7 +23,7 @@ const collaborators: { leave(): void }[] = [];
 
 async function start(options: Partial<Parameters<typeof startServer>[0]> = {}) {
   const catalog = await createPostCatalog(postsDir, ["lorem-ipsum"]);
-  server = await startServer({ host: "127.0.0.1", port: 0, catalog, heartbeatMs: 20, saveAfterMs: 20, saveEveryMs: 200, ...options });
+  server = await startServer({ host: "127.0.0.1", port: 0, catalog, heartbeatMs: 20, saveAfterMs: 20, saveEveryMs: 200, authWithinMs: 200, ...options });
   url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws/`;
 }
 
@@ -50,7 +50,12 @@ function track(socket: WebSocket) {
   return socket;
 }
 
-const open = (postId = "lorem-ipsum", options?: ConstructorParameters<typeof WebSocket>[1]) => track(new WebSocket(url + postId, options));
+// A socket that opens with a token, as the editor's does: the Share Link's own by default, none with `null`.
+function open(postId = "lorem-ipsum", token: string | null = server.token) {
+  const socket = track(new WebSocket(url + postId));
+  if (token !== null) socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "auth", token })));
+  return socket;
+}
 
 const until = (done: () => boolean) => expect.poll(done, { timeout: 2000, interval: 5 }).toBe(true);
 
@@ -79,8 +84,15 @@ async function collaborator(name = "Ana", color = 0, { via, store = tabStorage()
   let editor: Editor | undefined;
   // What it was offered back, as Markdown.
   const recovered: string[] = [];
+  // The close code of each of its sockets.
+  const closes: number[] = [];
   const sync = syncWithAuthority({
-    connect: () => (via ? track(new WebSocket(via + "lorem-ipsum")) : open()),
+    connect() {
+      const socket = via ? track(new WebSocket(via + "lorem-ipsum")) : open("lorem-ipsum", null);
+      socket.addEventListener("close", (event) => closes.push(event.code));
+      return socket;
+    },
+    token: server.token,
     me: { name, color },
     store,
     open: (doc, version, clientID) => {
@@ -101,6 +113,7 @@ async function collaborator(name = "Ana", color = 0, { via, store = tabStorage()
       return serialize(editor!.state.doc);
     },
     recovered,
+    closes,
     // Types at the start (or end) of the last paragraph.
     type(text: string, where: "start" | "end" = "end") {
       const end = editor!.state.doc.content.size - 1;
@@ -133,8 +146,9 @@ async function relay() {
     client.pipe(upstream).pipe(client);
   });
   await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
+  const address = relay.address() as AddressInfo;
   return {
-    url: `ws://127.0.0.1:${(relay.address() as AddressInfo).port}/ws/`,
+    url: `ws://127.0.0.1:${address.port}/ws/`,
     // The Server still hears its clients, they no longer hear it.
     mute() {
       for (const [client, upstream] of lines) upstream.unpipe(client);
@@ -145,6 +159,8 @@ async function relay() {
     },
     // Takes no new connection; the ones open end with their clients.
     close: () => void relay.close(),
+    // Takes new connections again, at the same address.
+    reopen: () => new Promise<void>((resolve) => relay.listen(address.port, "127.0.0.1", resolve)),
   };
 }
 
@@ -274,8 +290,43 @@ test("each Editing Session has its own instance ID, sent to every client, and a 
   expect((await raw()).messages[0].instance).not.toBe(third.messages[0].instance);
 });
 
-test("after a Server restart, what a Collaborator typed while it was down is offered back, and it follows the Post file", async () => {
-  const [a, b] = [await collaborator("Ana"), await collaborator("Bia", 1)];
+test("a Collaborator cut off while its Editing Session ends is offered back what it typed meanwhile, and follows the Post file", async () => {
+  const line = await relay();
+  const [a, b] = [await collaborator("Ana", 0, { via: line.url }), await collaborator("Bia", 1)];
+  a.type(" dolor");
+  await saved("---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+  const { instance } = (await raw()).messages[0];
+
+  line.close();
+  line.cut();
+  a.type(" amet");
+  b.leave();
+  for (const socket of sockets.splice(0)) socket.close();
+  // The closes may still be on their way to the Server: until then a newcomer joins the old Editing Session.
+  await expect
+    .poll(async () => {
+      const newcomer = await raw();
+      newcomer.socket.close();
+      return newcomer.messages[0].instance;
+    })
+    .not.toBe(instance);
+  const c = await collaborator("Cleo", 2);
+  await line.reopen();
+
+  await until(() => a.recovered.length === 1);
+  expect(a.recovered).toEqual(["---\ntitle: Lorem\n---\n\nIpsum dolor amet\n"]);
+  // Its unconfirmed Steps are gone: they belonged to the old Authority.
+  await converged([a, c], "---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+  a.type(" sit");
+  await converged([a, c], "---\ntitle: Lorem\n---\n\nIpsum dolor sit\n");
+  // c lost nothing, so it is offered nothing.
+  expect(c.recovered).toEqual([]);
+  line.close();
+});
+
+test("after a Server restart, a tab with the Share Link from before is refused; opened with the new one, it is offered back what it typed while the Server was down", async () => {
+  const store = tabStorage();
+  const [a, b] = [await collaborator("Ana", 0, { store }), await collaborator("Bia", 1)];
   a.type(" dolor");
   await saved("---\ntitle: Lorem\n---\n\nIpsum dolor\n");
 
@@ -283,14 +334,17 @@ test("after a Server restart, what a Collaborator typed while it was down is off
   a.type(" amet");
   await start();
 
-  await until(() => a.recovered.length === 1);
-  expect(a.recovered).toEqual(["---\ntitle: Lorem\n---\n\nIpsum dolor amet\n"]);
-  // Its unconfirmed Steps are gone: they belonged to the old Authority.
-  await converged([a, b], "---\ntitle: Lorem\n---\n\nIpsum dolor\n");
-  a.type(" sit");
-  await converged([a, b], "---\ntitle: Lorem\n---\n\nIpsum dolor sit\n");
-  // b lost nothing, so it is offered nothing.
-  expect(b.recovered).toEqual([]);
+  // Both try again on their own, with the token of the Server that stopped.
+  await until(() => a.closes.includes(4003) && b.closes.includes(4003));
+  a.leave();
+  const again = await collaborator("Ana", 0, { store });
+  const other = await collaborator("Bia", 1);
+
+  expect(again.recovered).toEqual(["---\ntitle: Lorem\n---\n\nIpsum dolor amet\n"]);
+  await converged([again, other], "---\ntitle: Lorem\n---\n\nIpsum dolor\n");
+  again.type(" sit");
+  await converged([again, other], "---\ntitle: Lorem\n---\n\nIpsum dolor sit\n");
+  expect(other.recovered).toEqual([]);
 });
 
 test("a Collaborator whose connection drops sends what it typed meanwhile once it is back, over what the others typed", async () => {
@@ -361,6 +415,18 @@ test("a Collaborator who closes the tab while the Server is down is offered what
   expect(again.markdown).toBe("---\ntitle: Lorem\n---\n\nIpsum\n");
 });
 
+test("a socket must open with the Share Link's token: with another, or none, it is closed before anything of the Post is sent", async () => {
+  const messages: string[] = [];
+  // The last one sends nothing at all.
+  const refused = [open("lorem-ipsum", "x".repeat(server.token.length)), open("lorem-ipsum", "wrong"), open("lorem-ipsum", "é".repeat(server.token.length)), open("lorem-ipsum", null), open("lorem-ipsum", null)];
+  refused[3].addEventListener("open", () => refused[3].send(JSON.stringify({ type: "catch-up", version: 0 })));
+  for (const socket of refused) socket.addEventListener("message", (event) => messages.push(event.data));
+
+  await until(() => refused.every((socket) => socket.readyState === WebSocket.CLOSED));
+  expect(messages.filter((message) => !message.includes("heartbeat"))).toEqual([]);
+  expect((await raw()).messages).toMatchObject([{ type: "init", version: 0 }]);
+});
+
 test("the Server sends a heartbeat on its interval", async () => {
   let heartbeats = 0;
   open().addEventListener("message", (event) => {
@@ -370,16 +436,13 @@ test("the Server sends a heartbeat on its interval", async () => {
   await until(() => heartbeats >= 2);
 });
 
-test("refuses a Post ID outside the Post Catalog and a page from another origin", async () => {
-  const refused = [open("other-post"), open("missing"), open("lorem-ipsum", { headers: { origin: "http://evil.example" } } as never)];
+test("refuses a Post ID outside the Post Catalog, even with the token", async () => {
+  const refused = [open("other-post"), open("missing")];
   const opened: WebSocket[] = [];
   for (const socket of refused) socket.addEventListener("open", () => opened.push(socket));
 
   await until(() => refused.every((socket) => socket.readyState === WebSocket.CLOSED));
   expect(opened).toEqual([]);
-  // The editor's own page is let in.
-  const own = open("lorem-ipsum", { headers: { origin: url.replace("ws:", "http:").slice(0, -"/ws/".length) } } as never);
-  await until(() => own.readyState === WebSocket.OPEN);
 });
 
 test("the Server saves the converged document to the Post file", async () => {

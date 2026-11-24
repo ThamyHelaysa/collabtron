@@ -9,7 +9,7 @@ The Server starts that dev server. `startEleventy` (`src/server/eleventy.ts`) fo
 
 `/preview/<post-id>` redirects to the Post's page from that map. Until a build has worked, it answers `503` with `Refresh: 2`, so the iframe asks again on its own.
 
-Every other path the editor does not use (`/p/`, `/api/posts/`, `/preview/`, `/ws/`, `/main.js`) goes to the dev server, at the root of the Server's own origin. The site's pages use absolute URLs, and Eleventy's reload client opens its WebSocket at `ws://<the page's host>/`. So WebSocket upgrades are proxied too, and the `Origin` check of [ADR 0005](0005-one-steps-message.md) now covers every upgrade, not only `/ws/`. Headers are forwarded as sent, `sec-fetch-mode` included: the dev server adds its reload client only to navigations.
+Every other path the editor does not use (`/p/`, `/api/auth`, `/preview/`, `/ws/`, `/main.js`) goes to the dev server, at the root of the Server's own origin. The site's pages use absolute URLs, and Eleventy's reload client opens its WebSocket at `ws://<the page's host>/`. So WebSocket upgrades are proxied too. The preview's cookie covers them, as it covers the pages ([ADR 0010](0010-token-opens-the-socket-a-cookie-the-preview.md)). Headers are forwarded as sent, `sec-fetch-mode` included: the dev server adds its reload client only to navigations.
 
 The preview refreshes through the site's own live reload. The Server saves ([ADR 0006](0006-server-saves-never-over-outside-changes.md)), Eleventy rebuilds, and its reload client in the iframe reloads or morphs the page. An edit can also move the page, because a permalink may follow front matter (on this site, a `date` in another year). So after every build that worked, the Server sends `{ type: "preview", url }` to the Collaborators of each open Post. A client whose preview shows another path replaces the iframe with a new one at that URL. It does not just change `src`: the old page's live reload can arrive after the message, and its `location.reload()` would cancel the navigation. A Post with `draft: true` works when the site still renders drafts while serving, as this site does: its draft check only leaves them out of collections.
 
@@ -34,7 +34,7 @@ On Linux, the launcher sets Eleventy's chokidar to `usePolling`. Its native watc
 - `pnpm dev` builds the whole site before the preview shows, and `node --watch` restarts the Server and its Eleventy with it.
 - A site with a `pathPrefix` is not supported yet: the map's URLs lack it.
 - `POSTS_DIR` must be inside `SITE_DIR`, since the map is keyed by paths inside the site: the Server refuses to start otherwise. A Post the site does not render while serving (`permalink: false` for drafts) keeps the preview on its retry message.
-- The proxy sits at the root, so a site file at `/main.js`, `/p/…`, `/preview/…` or `/ws/…` is hidden by the editor's own. This site has none.
+- The proxy sits at the root, so a site file at `/main.js`, `/api/auth`, `/p/…`, `/preview/…` or `/ws/…` is hidden by the editor's own. This site has none.
 - The launcher's `ready` server option is replaced if the site's config sets its own: the Server would then wait forever at start. This site sets none.
 - If the launcher dies after it served, the Server says so in the terminal and the preview answers `502` until the Server restarts.
 - Eleventy 4 uses Server-Sent Events for live reload instead of a WebSocket. The HTTP proxy streams responses, but that is untested.

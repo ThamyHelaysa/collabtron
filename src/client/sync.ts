@@ -20,12 +20,15 @@ const reconnectMs = 1000;
 // Returns `push`: call it after every transaction to keep and send unconfirmed Steps, then this Collaborator's Presence.
 export function syncWithAuthority({
   connect,
+  token,
   me,
   store,
   open,
   recover,
 }: {
   connect: () => WebSocket;
+  // The Share Link's, sent first on every socket: the Server sends nothing before it (ADR 0010).
+  token: string;
   me: Collaborator;
   store: Store;
   open: (doc: Node, version: number, clientID?: number | string) => Editor;
@@ -161,6 +164,7 @@ export function syncWithAuthority({
 
   const reconnect = () => {
     socket = connect();
+    socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "auth", token })));
     socket.addEventListener("message", receive);
     // A network drop or a stopped Server. The Server closes cleanly only on purpose, such as on an invalid message: trying again would not help.
     socket.addEventListener("close", (event) => {
