@@ -19,6 +19,7 @@ pnpm via corepack (`packageManager` in `package.json`, ADR 0002). Never `npm` or
 ```bash
 corepack pnpm install
 corepack pnpm dev <post-id>   # needs .env, copy from .env.example
+corepack pnpm dev:fixture     # by hand, no .env: a temp Eleventy site, prints the Share Link
 corepack pnpm typecheck
 corepack pnpm test
 ```
@@ -36,7 +37,7 @@ Before reporting: run `typecheck` and `test`, say which commands you could not r
 
 ## Git
 
-- Branch off `main`, one branch per issue (`issue-<n>-<slug>`). Never push to `main`.
+- Branch off `origin/main`, fetched first (local `main` lags), one branch per issue (`issue-<n>-<slug>`). Never push to `main`.
 - Conventional commits: `<type>(<scope>)?: <description>`, enforced by `.githooks/commit-msg`.
 - PR body says `Closes #<n>`.
 
