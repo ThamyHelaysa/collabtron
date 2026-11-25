@@ -4,7 +4,6 @@ import type { AddressInfo } from "node:net";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WebSocketServer } from "ws";
 import { createPostCatalog } from "./post-catalog.ts";
 import { startServer } from "./server.ts";
 
@@ -20,9 +19,11 @@ let close: (() => Promise<void>) | undefined;
 let eleventy: Server;
 
 beforeEach(async () => {
-  eleventy = createServer((req, res) => res.writeHead(200, { "content-type": "text/html", "x-site": "yes" }).end(`site page ${req.method} ${req.url}`));
-  // Its live reload socket, which the reload client opens at ws://<the page's host>/.
-  new WebSocketServer({ server: eleventy }).on("connection", (socket, req) => socket.send(`reload socket ${req.url}`));
+  eleventy = createServer((req, res) => {
+    // Its live reload, which the reload client reads with an EventSource: one event, then the stream stays open.
+    if (req.url === "/.ba/events") return void res.writeHead(200, { "content-type": "text/event-stream" }).write("data: reload\n\n");
+    res.writeHead(200, { "content-type": "text/html", "x-site": "yes" }).end(`site page ${req.method} ${req.url}`);
+  });
   await new Promise<void>((resolve) => eleventy.listen(0, "127.0.0.1", resolve));
 
   postsDir = await mkdtemp(join(tmpdir(), "collabtron-"));
@@ -46,13 +47,11 @@ beforeEach(async () => {
 });
 
 const withCookie = () => ({ headers: { cookie } });
-// The site's live reload socket, through the Server: what it says first, or null if it is refused.
-const reloadSocket = (headers: Record<string, string>) =>
-  new Promise<unknown>((resolve) => {
-    const socket = new WebSocket(base.replace("http:", "ws:") + "/", { headers } as never);
-    socket.onmessage = (event) => (resolve(event.data), socket.close());
-    socket.onerror = () => resolve(null);
-  });
+// The site's live reload, through the Server: its first event, read while the stream is still open.
+async function reloadStream() {
+  const reader = (await fetch(`${base}/.ba/events`, withCookie())).body!.getReader();
+  return { first: new TextDecoder().decode((await reader.read()).value), reader };
+}
 
 afterEach(async () => {
   await close?.();
@@ -99,11 +98,11 @@ test("the Share Link's token gets the preview's cookie, kept from the page's scr
   }
 });
 
-test("the preview and every page of the site are refused without the cookie, the site's live reload socket too", async () => {
+test("the preview and every page of the site are refused without the cookie, the site's live reload too", async () => {
   for (const headers of [{}, { cookie: "__Host-collabtron=wrong" }, { cookie: `__Host-collabtron=${token}` }] as Record<string, string>[]) {
     expect((await fetch(`${base}/blog/2026/lorem-ipsum/`, { headers })).status).toBe(403);
     expect((await fetch(`${base}/preview/lorem-ipsum`, { headers, redirect: "manual" })).status).toBe(403);
-    expect(await reloadSocket(headers)).toBeNull();
+    expect((await fetch(`${base}/.ba/events`, { headers })).status).toBe(403);
   }
   // The editor page itself holds nothing of the Post: the token is in the link's fragment, which only the page reads.
   expect((await fetch(`${base}/p/lorem-ipsum`)).status).toBe(200);
@@ -122,8 +121,10 @@ test("a path the editor does not use is the site's own, from its Eleventy dev se
   expect(await res.text()).toBe("site page GET /blog/2026/lorem-ipsum/?x=1");
 });
 
-test("the site's live reload socket reaches its Eleventy dev server", async () => {
-  expect(await reloadSocket({ cookie })).toBe("reload socket /");
+test("the site's live reload reaches the tab as its dev server sends it, not when the stream ends", async () => {
+  const { first, reader } = await reloadStream();
+  expect(first).toBe("data: reload\n\n");
+  await reader.cancel();
 });
 
 test("the preview of a Post opens its page wherever the site put it, and only for a Post in the Post Catalog", async () => {
@@ -134,14 +135,13 @@ test("the preview of a Post opens its page wherever the site put it, and only fo
   expect((await fetch(`${base}/preview/other-post`, { ...withCookie(), redirect: "manual" })).status).toBe(404);
 });
 
-test("closing the Server closes the site's live reload sockets it proxies", async () => {
-  const socket = new WebSocket(base.replace("http:", "ws:") + "/", { headers: { cookie } } as never);
-  await new Promise((resolve) => (socket.onmessage = resolve));
-  const closed = new Promise((resolve) => (socket.onclose = resolve));
+test("closing the Server ends the site's live reload streams it proxies", async () => {
+  const { reader } = await reloadStream();
+  const ended = reader.read().catch(() => {});
 
   const started = Date.now();
   await close!();
   close = undefined;
-  await closed;
+  await ended;
   expect(Date.now() - started).toBeLessThan(1000);
 }, 10_000);

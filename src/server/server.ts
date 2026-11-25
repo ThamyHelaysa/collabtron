@@ -1,7 +1,7 @@
 import { createServer, request } from "node:http";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { pipeline, type Duplex } from "node:stream";
+import { pipeline } from "node:stream";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import { colors, displayName } from "../shared/collaborator.ts";
@@ -115,8 +115,6 @@ export async function startServer({
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxMessage });
   // Tells the others whose Presence a message is.
   let nextSocketId = 0;
-  // The site's live reload sockets: closing the Server waits for every socket it upgraded, so it closes these too.
-  const siteSockets = new Set<Duplex>();
 
   // Each build can move a Post's page: every Collaborator's preview follows it (ADR 0009).
   if (eleventy) {
@@ -313,16 +311,7 @@ export async function startServer({
   }
 
   server.on("upgrade", (req, socket, head) => {
-    if (!req.url?.startsWith("/ws/")) {
-      if (!eleventy) return void socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
-      // The site's live reload sends its pages as they build: the same cookie as the pages (ADR 0010).
-      if (!hasPreviewCookie(req)) return void socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
-      siteSockets.add(socket);
-      socket.once("close", () => siteSockets.delete(socket));
-      proxyUpgrade(eleventy.url, req, socket, head);
-      return;
-    }
-    const post = catalog.get(req.url.match(/^\/ws\/([^/?#]+)$/)?.[1] ?? "");
+    const post = catalog.get(req.url?.match(/^\/ws\/([^/?#]+)$/)?.[1] ?? "");
     if (!post) {
       socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
       return;
@@ -354,7 +343,6 @@ export async function startServer({
     close: async () => {
       clearInterval(heartbeat);
       for (const socket of wss.clients) socket.terminate();
-      for (const socket of siteSockets) socket.destroy();
       await Promise.all([...editingSessions.values()].map((session) => session.then(({ saver }) => saver.flush(), () => {})));
       const closed = new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
       // A browser keeps idle and preconnected sockets open; waiting for them would stall Ctrl-C and `node --watch` restarts.
@@ -362,27 +350,4 @@ export async function startServer({
       return closed;
     },
   };
-}
-
-// The site's live reload socket: Eleventy's reload client opens it at ws://<the page's host>/, so here.
-function proxyUpgrade(siteUrl: string, req: IncomingMessage, socket: Duplex, head: Buffer) {
-  // A tab closing resets its socket: routine, and each end closes the other below.
-  socket.on("error", () => {});
-  const site = request(new URL(req.url!, siteUrl), { headers: req.headers });
-  socket.on("close", () => site.destroy());
-  site.on("upgrade", (answer, siteSocket, siteHead) => {
-    siteSocket.on("error", () => {}).on("close", () => socket.destroy());
-    socket.on("close", () => siteSocket.destroy());
-    const headers = answer.rawHeaders.flatMap((name, i) => (i % 2 ? [] : [`${name}: ${answer.rawHeaders[i + 1]}`]));
-    socket.write(["HTTP/1.1 101 Switching Protocols", ...headers, "", ""].join("\r\n"));
-    socket.write(siteHead);
-    siteSocket.write(head);
-    siteSocket.pipe(socket).pipe(siteSocket);
-  });
-  site.on("response", (answer) => {
-    answer.resume();
-    socket.end(`HTTP/1.1 ${answer.statusCode} ${answer.statusMessage}\r\n\r\n`);
-  });
-  site.on("error", () => socket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"));
-  site.end();
 }

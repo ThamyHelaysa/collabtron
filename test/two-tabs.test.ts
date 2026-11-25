@@ -139,3 +139,13 @@ test("the editor opens even when the site's first build fails, and the preview c
     await rm(site.dir, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("the site's dev server stays off the network: a site that sets another host gets no preview", async () => {
+  const site = await makeSite({ "lorem-ipsum": "Ipsum\n" });
+  await writeFile(join(site.dir, "eleventy.config.mjs"), 'export default (config) => config.setServerOptions({ host: "0.0.0.0" });\n');
+  try {
+    await expect(startEleventy(site.dir)).rejects.toThrow("exit code 1");
+  } finally {
+    await rm(site.dir, { recursive: true, force: true });
+  }
+}, 30_000);

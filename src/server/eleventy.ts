@@ -1,10 +1,7 @@
-import { fork, type ChildProcess } from "node:child_process";
+import { fork } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-
-// The launcher's exit code when the site's first build failed and a file changed since: a new launcher builds again.
-export const buildAgain = 75;
 
 // What the launcher tells the Server, over IPC.
 export type LauncherMessage = { type: "ready"; url: string } | { type: "contentMap"; inputPathToUrl: Record<string, string[]> };
@@ -14,10 +11,14 @@ export type LauncherMessage = { type: "ready"; url: string } | { type: "contentM
 export function startEleventy(siteDir: string) {
   let inputPathToUrl: Record<string, string[]> = {};
   const builtListeners = new Set<() => void>();
-  let child: ChildProcess;
   let closed = false;
+  const child = fork(new URL("./eleventy-launcher.ts", import.meta.url), {
+    cwd: siteDir,
+    // Never the Server's own flags (`--watch`, `--env-file`). A TypeScript config needs the site's own loader:
+    // plain Node cannot load every one (docs/research/eleventy-page-url.md).
+    execArgv: existsSync(join(siteDir, "eleventy.config.ts")) ? ["--import", "tsx"] : [],
+  });
   const eleventy = {
-    // Changes when a new launcher takes over; the Server reads it on every request.
     url: "",
     // Eleventy's keys are relative to the site, with `./` and `/`.
     // shortcut: no pathPrefix in front of the URL; add Eleventy's when a site sets one.
@@ -33,31 +34,21 @@ export function startEleventy(siteDir: string) {
     },
   };
   return new Promise<typeof eleventy>((resolve, reject) => {
-    const launch = () => {
-      child = fork(new URL("./eleventy-launcher.ts", import.meta.url), {
-        cwd: siteDir,
-        // Never the Server's own flags (`--watch`, `--env-file`). A TypeScript config needs the site's own loader:
-        // plain Node cannot load every one (docs/research/eleventy-page-url.md).
-        execArgv: existsSync(join(siteDir, "eleventy.config.ts")) ? ["--import", "tsx"] : [],
-      });
-      child.once("exit", (code) => {
-        if (closed) return;
-        if (code === buildAgain) return launch();
-        const error = new Error(`the site's Eleventy stopped (exit code ${code}): the preview is gone until the Server restarts`);
-        // After it served, nothing awaits the promise any more.
-        if (eleventy.url) console.error(error.message);
-        reject(error);
-      });
-      child.on("message", (message: LauncherMessage) => {
-        if (message.type === "contentMap") {
-          inputPathToUrl = message.inputPathToUrl;
-          for (const listener of builtListeners) listener();
-        }
-        if (message.type !== "ready") return;
-        eleventy.url = message.url;
-        resolve(eleventy);
-      });
-    };
-    launch();
+    child.once("exit", (code) => {
+      if (closed) return;
+      const error = new Error(`the site's Eleventy stopped (exit code ${code}): the preview is gone until the Server restarts`);
+      // After it served, nothing awaits the promise any more.
+      if (eleventy.url) console.error(error.message);
+      reject(error);
+    });
+    child.on("message", (message: LauncherMessage) => {
+      if (message.type === "contentMap") {
+        inputPathToUrl = message.inputPathToUrl;
+        for (const listener of builtListeners) listener();
+      }
+      if (message.type !== "ready") return;
+      eleventy.url = message.url;
+      resolve(eleventy);
+    });
   });
 }
