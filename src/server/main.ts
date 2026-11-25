@@ -25,8 +25,6 @@ const catalog = await createPostCatalog(postsDir, [postId]);
 
 console.log("Building the site with its own Eleventy…");
 const eleventy = await startEleventy(siteDir);
-// Eleventy Dev Server 2 has no host option (ADR 0009).
-console.warn(`The site's Eleventy dev server at ${eleventy.url} listens on every network interface: anyone on this network can read its pages, drafts included.`);
 const server = await startServer({ host, port, catalog, eleventy });
 // New at every start: send it again to the Collaborators after a restart (ADR 0010).
 console.log(`Share Link: http://${host}:${port}/p/${postId}#token=${server.token}`);
